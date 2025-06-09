@@ -7,7 +7,6 @@ except ImportError:
 import os
 import streamlit as st
 import requests
-from bs4 import BeautifulSoup
 
 from langchain_community.document_loaders import PyPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -18,16 +17,15 @@ from agno.agent import Agent
 from agno.models.google import Gemini
 
 # --- Configuration ---
-BASE_URL = "https://sansad.in/ls/questions/questions-and-answers"
 PDF_CACHE_DIR = "pdf_cache_sansad"
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 GEMINI_MODEL_NAME = "gemini-2.0-flash-exp"
+API_URL = "https://sansad.in/api_ls/question/qetFilteredQuestionsAns"
 
 os.makedirs(PDF_CACHE_DIR, exist_ok=True)
 
- 
-API_URL = "https://sansad.in/api_ls/question/qetFilteredQuestionsAns"
-
+# --- Fetch all Q&A records via the API ---
+@st.cache_data(ttl=24*3600)
 def fetch_all_questions(loksabha_no=18, session_no=4, max_pages=20, page_size=10, locale="en"):
     all_questions = []
     for page in range(max_pages):
@@ -43,15 +41,17 @@ def fetch_all_questions(loksabha_no=18, session_no=4, max_pages=20, page_size=10
             resp.raise_for_status()
             data = resp.json()
         except Exception as e:
-            print(f"Error fetching page {page}: {e}")
+            st.warning(f"Error fetching page {page}: {e}")
             break
 
         questions = data.get("data", {}).get("questions", [])
         if not questions:
-            print(f"No more questions found on page {page}.")
             break
 
         for q in questions:
+            pdf_url = q.get("pdfPath")
+            if pdf_url and not pdf_url.startswith("http"):
+                pdf_url = "https://sansad.in" + pdf_url
             all_questions.append({
                 "question_no": q.get("questionNumber"),
                 "subject": q.get("subject"),
@@ -60,12 +60,10 @@ def fetch_all_questions(loksabha_no=18, session_no=4, max_pages=20, page_size=10
                 "member": q.get("questionByMemberNames"),
                 "ministry": q.get("ministry"),
                 "type": q.get("questionType"),
-                "pdf_url": q.get("pdfPath"),
+                "pdf_url": pdf_url,
                 "question_text": q.get("questionTitle"),
                 "date": q.get("answerDate"),
             })
-        print(f"Fetched page {page}: {len(questions)} questions.")
-    print(f"Total questions fetched: {len(all_questions)}")
     return all_questions
 
 # --- Build FAISS vector store from filtered records ---
