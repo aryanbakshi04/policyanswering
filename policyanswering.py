@@ -26,9 +26,9 @@ GEMINI_MODEL_NAME = "gemini-2.0-flash-exp"
 os.makedirs(PDF_CACHE_DIR, exist_ok=True)
 
 @st.cache_data
-def fetch_all_items(max_pages=5):
+def fetch_all_items(max_pages=625):
     items = []
-    for page in range(1, max_pages + 1):
+    for page in range(1, max_pages):
         resp = requests.get(f"{BASE_LIST_URL}?page={page}")
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
@@ -42,7 +42,7 @@ def fetch_all_items(max_pages=5):
             dsoup = BeautifulSoup(dresp.text, "html.parser")
             ministry = dsoup.find("th", text="Ministry").find_next_sibling("td").get_text(strip=True)
             session = dsoup.find("th", text="Session").find_next_sibling("td").get_text(strip=True)
-            ans_date = dsoup.find("th", text="Answer Date").find_next_sibling("td").get_text(strip=True)
+            ans_date = dsoup.find("th", text="ANSWERED ON").find_next_sibling("td").get_text(strip=True)
             pdf_tag = dsoup.select_one("a[href$='.pdf']")
             if not pdf_tag:
                 continue
