@@ -4,7 +4,9 @@ try:
 except ImportError:
     pass
 
-import os, streamlit as st, requests
+import os
+import streamlit as st
+import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 
@@ -16,15 +18,22 @@ from langchain_community.vectorstores import FAISS
 from agno.agent import Agent
 from agno.models.google import Gemini
 
-BASE_URL = "https://sansad.in/ls/questions/questions-and-answers"
-CACHE_DIR = "pdf_cache"
-EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
-GEMINI_MODEL = "gemini-2.0-flash-exp"
+BASE_URL      = "https://sansad.in/ls/questions/questions-and-answers"
+HEADERS       = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/114.0.0.0 Safari/537.36"
+    )
+}
+PDF_CACHE_DIR = "pdf_cache"
+EMBED_MODEL   = "sentence-transformers/all-MiniLM-L6-v2"
+GEMINI_MODEL  = "gemini-2.0-flash-exp"
 
-os.makedirs(CACHE_DIR, exist_ok=True)
+os.makedirs(PDF_CACHE_DIR, exist_ok=True)
 
-def detect_pages():
-    r = requests.get(BASE_URL)
+def detect_total_pages():
+    r = requests.get(BASE_URL, headers=HEADERS)
     r.raise_for_status()
     soup = BeautifulSoup(r.text, "html.parser")
     pager = soup.select_one("ul.pagination")
@@ -34,104 +43,128 @@ def detect_pages():
     return max(nums) if nums else 1
 
 @st.cache_data
-def fetch_items():
+def fetch_all_items():
     items, seen = [], set()
-    total = detect_pages()
-    for page in range(1, total+1):
+    total = detect_total_pages()
+    for page in range(1, total + 1):
         url = f"{BASE_URL}?page={page}"
-        r = requests.get(url); r.raise_for_status()
+        r = requests.get(url, headers=HEADERS)
+        r.raise_for_status()
         rows = BeautifulSoup(r.text, "html.parser")\
                .select("table.table-striped tbody tr")
         if not rows:
             break
         for row in rows:
             link = row.select_one("td:nth-of-type(5) a")
-            if not link: continue
-            detail = urljoin(BASE_URL, link["href"])
-            dr = requests.get(detail); dr.raise_for_status()
+            if not link:
+                continue
+            detail_url = urljoin(BASE_URL, link["href"])
+            dr = requests.get(detail_url, headers=HEADERS)
+            dr.raise_for_status()
             ds = BeautifulSoup(dr.text, "html.parser")
-
-            pdf = ds.select_one("a[href$='.pdf']")
-            if not pdf: continue
-            pdf_url = urljoin(detail, pdf["href"])
-            if pdf_url in seen: continue
+            pdf_tag = ds.select_one("a[href$='.pdf']")
+            if not pdf_tag:
+                continue
+            pdf_url = urljoin(detail_url, pdf_tag["href"])
+            if pdf_url in seen:
+                continue
             seen.add(pdf_url)
-
-            mins = ds.find("th", text="Ministry").find_next_sibling("td").text.strip()
-            sess = ds.find("th", text="Session").find_next_sibling("td").text.strip()
-            date= ds.find("th", text="Answer Date").find_next_sibling("td").text.strip()
-
+            ministry    = ds.find("th", text="Ministry").find_next_sibling("td").get_text(strip=True)
+            session     = ds.find("th", text="Session").find_next_sibling("td").get_text(strip=True)
+            answer_date = ds.find("th", text="Answer Date").find_next_sibling("td").get_text(strip=True)
             items.append({
-                "pdf_url": pdf_url,
-                "ministry": mins,
-                "session": sess,
-                "answer_date": date
+                "pdf_url":     pdf_url,
+                "ministry":    ministry,
+                "session":     session,
+                "answer_date": answer_date
             })
     return items
 
 @st.cache_data
-def download_pdf(url):
-    fn = os.path.basename(url)
-    path = os.path.join(CACHE_DIR, fn)
+def download_pdf(pdf_url):
+    fname = os.path.basename(pdf_url)
+    path = os.path.join(PDF_CACHE_DIR, fname)
     if not os.path.exists(path):
-        r = requests.get(url); r.raise_for_status()
-        open(path, "wb").write(r.content)
+        r = requests.get(pdf_url, headers=HEADERS)
+        r.raise_for_status()
+        with open(path, "wb") as f:
+            f.write(r.content)
     return path
 
 @st.cache_resource
-def build_db(itms):
-    if not itms: return None
-    docs=[]
-    for x in itms:
-        p = download_pdf(x["pdf_url"])
-        for d in PyPDFLoader(p).load():
-            d.metadata.update(x); docs.append(d)
-    if not docs: return None
-    chunks = RecursiveCharacterTextSplitter(1000,100).split_documents(docs)
-    if not chunks: return None
-    emb = SentenceTransformerEmbeddings(EMBED_MODEL)
-    return FAISS.from_documents(chunks, emb)
+def build_vectordb(items):
+    if not items:
+        return None
+    docs = []
+    for it in items:
+        pdf_path = download_pdf(it["pdf_url"])
+        loader   = PyPDFLoader(pdf_path)
+        for page in loader.load():
+            page.metadata.update(it)
+            docs.append(page)
+    if not docs:
+        return None
+    splitter  = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
+    chunks    = splitter.split_documents(docs)
+    if not chunks:
+        return None
+    embedder  = SentenceTransformerEmbeddings(model_name=EMBED_MODEL)
+    return FAISS.from_documents(chunks, embedder)
 
 @st.cache_resource
-def make_agent():
+def init_agent():
     return Agent(
         model=Gemini(id=GEMINI_MODEL),
-        description="Answer as Ministry, formal & solution-oriented.",
-        instructions=["Use PDF context, focus on public welfare."],
-        show_tool_calls=False
+        description="Answer Lok Sabha questions as the selected ministry.",
+        instructions=[
+            "Use provided PDF snippets as context.",
+            "Be formal, positive, solution-oriented, and focus on public welfare."
+        ],
+        show_tool_calls=False,
+        markdown=False
     )
 
-items = fetch_items()
+items = fetch_all_items()
 if not items:
     st.error("No Q&A items found; site structure may have changed.")
     st.stop()
 
-db = build_db(items)
-if not db:
-    st.error("Index build failed; no text extracted.")
+vectordb = build_vectordb(items)
+if vectordb is None:
+    st.error("Failed to build index; no text extracted.")
     st.stop()
 
-agent = make_agent()
-mins = sorted({i["ministry"] for i in items})
-sel = st.selectbox("Select Ministry", ["All"]+mins)
+agent = init_agent()
+ministries = sorted({it["ministry"] for it in items})
+selected_min = st.selectbox("Select Ministry", ["All"] + ministries)
 
-q = st.text_area("Your parliamentary question:")
+question = st.text_area("Enter your parliamentary question:")
 if st.button("Get Answer"):
-    if not q.strip():
-        st.error("cannot answer this query"); st.stop()
-    docs = db.similarity_search(q, k=10)
-    if sel!="All":
-        docs = [d for d in docs if d.metadata["ministry"]==sel]
-    docs=docs[:4]
+    if not question.strip():
+        st.error("cannot answer this query")
+        st.stop()
+    docs = vectordb.similarity_search(question, k=10)
+    if selected_min != "All":
+        docs = [d for d in docs if d.metadata["ministry"] == selected_min]
+    docs = docs[:4]
     if not docs:
-        st.error("cannot answer this query"); st.stop()
-    ctx = "\n\n".join(f"[{d.metadata['session']} | {d.metadata['answer_date']}] {d.page_content.strip()}" for d in docs)
-    prompt = f"Context:\n{ctx}\n\nAnswer as the Ministry of {sel}: formal, solution-oriented, include session, date & PDF link.\nQuestion: {q}"
-    res = agent.run(prompt)
-    ans = getattr(res,"content",str(res))
-    st.subheader("Answer"); st.write(ans)
+        st.error("cannot answer this query")
+        st.stop()
+    context = "\n\n".join(
+        f"[{d.metadata['session']} | {d.metadata['answer_date']}] {d.page_content.strip()}"
+        for d in docs
+    )
+    prompt = (
+        f"Context:\n{context}\n\n"
+        f"Answer as the Ministry of {selected_min}: Provide a formal, solution-oriented response "
+        f"focusing on public interest. Include session, date, and source PDF link.\nQuestion: {question}"
+    )
+    response = agent.run(prompt)
+    answer = getattr(response, "content", str(response))
+    st.subheader("Answer")
+    st.write(answer)
     st.subheader("Sources")
     for d in docs:
-        md=d.metadata
+        md = d.metadata
         st.markdown(f"- Session: {md['session']} | Date: {md['answer_date']}")
-        st.markdown(f"  [PDF]({md['pdf_url']})")
+        st.markdown(f"  [PDF Source]({md['pdf_url']})")
