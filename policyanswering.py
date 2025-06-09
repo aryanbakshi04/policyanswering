@@ -77,6 +77,12 @@ def fetch_all_questions(loksabha_no=18, session_no=4, max_pages=3, page_size=10,
                 "date": q.get("answerDate"),
             })
     return all_questions
+# -----------------------------------
+all_records = fetch_all_questions()
+st.write(f"Fetched {len(all_records)} total records")
+if len(all_records) > 0:
+    st.write(all_records[:3])  # Show the first 3 records to inspect their structure
+# ----------------------------------------
 # --- Build FAISS vector store from filtered records ---
 @st.cache_resource
 def build_vectorstore(records):
