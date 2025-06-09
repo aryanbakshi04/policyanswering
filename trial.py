@@ -41,7 +41,7 @@ def fetch_all_questions(lokNo=18, sessionNo=4, max_pages=625, page_size=10, loca
         "Headers": headers
     })
 
-    for page in range(1, max_pages + 1):
+    for page in range(1, max_pages):
         params = {
             "loksabhaNo": lokNo,
             "sessionNumber": sessionNo,
