@@ -30,15 +30,15 @@ def fetch_ministries():
     resp = requests.get(BASE_URL)
     resp.raise_for_status()
     soup = BeautifulSoup(resp.text, 'html.parser')
-    select = soup.find('select', {'name': 'field_department_tid'}) or soup.find('select', {'id': 'edit-field-department-tid'})
+    select = soup.find('select', {'id': 'edit-field-department-tid'})
     options = select.find_all('option') if select else []
-    # return a simple list of ministry values (pickle-serializable)
-    ministry_values = []
+    mapping = {}
     for opt in options:
         val = opt.get('value')
-        if val:
-            ministry_values.append(val)
-    return ministry_values
+        text = opt.get_text(strip=True)
+        if val and text and val != 'All':
+            mapping[text] = val
+    return mapping
 
 
 @st.cache_data(ttl=24*3600)
