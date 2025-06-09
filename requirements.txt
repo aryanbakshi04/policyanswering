@@ -11,3 +11,5 @@ google-auth
 google-auth-oauthlib
 google-genai
 python-dotenv
+pymupdf
+unstructured[pdf,ocr]
