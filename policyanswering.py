@@ -39,6 +39,8 @@ def fetch_all_questions(loksabha_no=18, session_no=4, max_pages=3, page_size=10,
             resp = requests.get(API_URL, params=params, timeout=15)
             resp.raise_for_status()
             data = resp.json()
+            if page == 1:
+                st.write(data)
         except Exception as e:
             st.warning(f"Error fetching page {page}: {e}")
             break
