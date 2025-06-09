@@ -30,17 +30,10 @@ os.makedirs(PDF_CACHE_DIR, exist_ok=True)
 def fetch_all_questions(lokNo=18, sessionNo=4, max_pages=625, page_size=10, locale="en"):
     all_questions = []
     
-    # Add proper headers
     headers = {
         'Accept': 'application/json',
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
     }
-
-    # Debug: Show API configuration
-    st.write("API Configuration:", {
-        "URL": API_URL,
-        "Headers": headers
-    })
 
     for page in range(1, max_pages + 1):
         params = {
@@ -52,105 +45,106 @@ def fetch_all_questions(lokNo=18, sessionNo=4, max_pages=625, page_size=10, loca
         }
 
         try:
-            # Debug: Show full URL
-            full_url = f"{API_URL}?{urlencode(params)}"
-            st.write(f"Fetching page {page}: {full_url}")
-
-            # Make request with headers
-            resp = requests.get(
-                API_URL, 
-                params=params,
-                headers=headers,
-                timeout=30
-            )
+            resp = requests.get(API_URL, params=params, headers=headers, timeout=30)
+            resp.raise_for_status()
             
-            # Debug: Show response details
-            st.write(f"Response Status: {resp.status_code}")
-            st.write(f"Response Headers: {dict(resp.headers)}")
+            # Parse the response
+            data = resp.json()
+            
+            # Debug first page
+            if page == 1:
+                st.write("First page data structure:", type(data))
+                st.write("First page data length:", len(data) if isinstance(data, list) else 0)
 
-            # Check response
-            if resp.status_code != 200:
-                st.error(f"API Error: Status {resp.status_code}")
-                st.write("Response:", resp.text[:500])
-                break
-
-            # Try to parse JSON
-            try:
-                data = resp.json()
-                if page == 1:
-                    st.write("Raw API Response:", json.dumps(data, indent=2))
-            except json.JSONDecodeError as e:
-                st.error(f"JSON Parse Error: {str(e)}")
-                st.write("Raw Response:", resp.text[:500])
-                break
-
-            # Validate data structure
-            if not data:
-                st.warning(f"Empty response on page {page}")
-                break
-
-            # Extract questions with validation
-            questions = []
+            # Process data - we know it's a list of dicts with 'listOfQuestions'
             if isinstance(data, list):
                 for item in data:
-                    if not isinstance(item, dict):
-                        continue
-                    qlist = item.get("listOfQuestions", [])
-                    if isinstance(qlist, list):
-                        valid_questions = [
-                            q for q in qlist 
-                            if isinstance(q, dict) and q.get("ministry")
-                        ]
-                        questions.extend(valid_questions)
-            
-            # Debug: Show extracted questions
-            if page == 1:
-                st.write(f"Extracted {len(questions)} questions from page 1")
-                if questions:
-                    st.write("First question sample:", json.dumps(questions[0], indent=2))
+                    if isinstance(item, dict) and "listOfQuestions" in item:
+                        questions_list = item["listOfQuestions"]
+                        if isinstance(questions_list, list):
+                            for q in questions_list:
+                                if isinstance(q, dict):
+                                    ministry = q.get("ministry")
+                                    if ministry:  # Only process if ministry exists
+                                        processed_q = {
+                                            "question_no": q.get("quesNo"),
+                                            "subject": q.get("subjects"),
+                                            "loksabha": q.get("lokNo"),
+                                            "session": q.get("sessionNo"),
+                                            "member": (", ".join(q.get("member", []))
+                                                     if isinstance(q.get("member"), list)
+                                                     else q.get("member", "")),
+                                            "ministry": ministry,
+                                            "type": q.get("type"),
+                                            "pdf_url": q.get("questionsFilePath"),
+                                            "question_text": q.get("questionText"),
+                                            "date": q.get("date"),
+                                        }
+                                        all_questions.append(processed_q)
 
-            if not questions:
-                st.warning(f"No valid questions found on page {page}")
+            # Debug counts
+            if page == 1:
+                st.write(f"Processed questions on page 1: {len(all_questions)}")
+                if all_questions:
+                    st.write("First processed question:", all_questions[0])
+
+            # If no questions found on a page, assume we've reached the end
+            if not any(isinstance(item, dict) and item.get("listOfQuestions") for item in data):
                 break
 
-            # Process valid questions
-            for q in questions:
-                ministry = q.get("ministry")
-                if not ministry:
-                    continue
-
-                processed_q = {
-                    "question_no": q.get("quesNo"),
-                    "subject": q.get("subjects"),
-                    "loksabha": q.get("lokNo"),
-                    "session": q.get("sessionNo"),
-                    "member": (", ".join(q.get("member", []))
-                             if isinstance(q.get("member"), list)
-                             else q.get("member")),
-                    "ministry": ministry,
-                    "type": q.get("type"),
-                    "pdf_url": q.get("questionsFilePath"),
-                    "question_text": q.get("questionText"),
-                    "date": q.get("date"),
-                }
-                all_questions.append(processed_q)
-
-        except requests.RequestException as e:
-            st.error(f"Request failed on page {page}: {str(e)}")
-            break
         except Exception as e:
-            st.error(f"Unexpected error on page {page}: {str(e)}")
+            st.error(f"Error processing page {page}: {str(e)}")
             import traceback
             st.write("Traceback:", traceback.format_exc())
             break
 
-    # Final summary
-    st.write(f"Total questions processed: {len(all_questions)}")
+    # Final processing
     if all_questions:
         ministries = sorted({q['ministry'] for q in all_questions if q.get('ministry')})
-        st.write("Ministries found:", ministries)
+        st.write(f"Total questions processed: {len(all_questions)}")
+        st.write(f"Unique ministries found: {len(ministries)}")
+        st.write("Ministries:", ministries)
+    else:
+        st.error("No questions were processed successfully")
 
     return all_questions
+
+# --- Streamlit App UI ---
+st.title("Parliamentary Ministry Q&A Assistant")
+
+# Initialize session state
+if 'all_records' not in st.session_state:
+    st.session_state.all_records = None
+
+# Fetch data
+with st.spinner("Fetching parliamentary questions..."):
+    all_records = fetch_all_questions()
+    st.session_state.all_records = all_records
+
+# Process ministries
+if st.session_state.all_records:
+    ministries = sorted({
+        rec['ministry'] 
+        for rec in st.session_state.all_records 
+        if rec.get('ministry')
+    })
+    
+    if ministries:
+        st.write(f"Found {len(ministries)} ministries")
+        selected_ministry = st.sidebar.selectbox("Select Ministry", ministries)
+        
+        # Filter records
+        filtered = [r for r in st.session_state.all_records if r['ministry'] == selected_ministry]
+        if filtered:
+            st.write(f"Found {len(filtered)} questions for {selected_ministry}")
+            
+            # Continue with your vector store and Q&A logic...
+        else:
+            st.error(f"No records found for {selected_ministry}")
+    else:
+        st.error("No ministries found in the processed data")
+else:
+    st.error("No data retrieved from API")
 # -------------------------------------------------------------------------------------
 all_records = fetch_all_questions()
 ministries = sorted({rec['ministry'] for rec in all_records if rec['ministry']})
