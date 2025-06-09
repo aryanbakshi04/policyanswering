@@ -25,47 +25,48 @@ GEMINI_MODEL_NAME = "gemini-2.0-flash-exp"
 
 os.makedirs(PDF_CACHE_DIR, exist_ok=True)
 
-# --- Fetch all Q&A records across ministries ---
-# Remove @st.cache_data for debugging; re-enable after fixing issues
-def fetch_all_records(max_pages=50):
-    import urllib.parse
-    records = []
+ 
+API_URL = "https://sansad.in/api_ls/question/qetFilteredQuestionsAns"
+
+def fetch_all_questions(loksabha_no=18, session_no=4, max_pages=20, page_size=10, locale="en"):
+    all_questions = []
     for page in range(max_pages):
-        params = {'page': page}
+        params = {
+            "loksabhaNo": loksabha_no,
+            "sessionNumber": session_no,
+            "pageNo": page,
+            "locale": locale,
+            "pageSize": page_size
+        }
         try:
-            resp = requests.get(BASE_URL, params=params, timeout=15)
+            resp = requests.get(API_URL, params=params, timeout=15)
+            resp.raise_for_status()
+            data = resp.json()
         except Exception as e:
-            st.error(f"Network error on page {page}: {e}")
+            print(f"Error fetching page {page}: {e}")
             break
-        if resp.status_code != 200:
-            st.error(f"Failed to fetch page {page}: HTTP {resp.status_code}")
-            st.write("Partial response content:", resp.text[:1000])
+
+        questions = data.get("data", {}).get("questions", [])
+        if not questions:
+            print(f"No more questions found on page {page}.")
             break
-        soup = BeautifulSoup(resp.text, 'html.parser')
-        rows = soup.select('table.views-table tbody tr')
-        if not rows:
-            st.warning(f"No table rows found on page {page}. The website structure might have changed.")
-            st.write("Partial page content for debugging:", resp.text[:1000])
-            break
-        for row in rows:
-            cells = row.find_all('td')
-            if len(cells) < 8:
-                continue
-            question = cells[1].get_text(strip=True)
-            session = cells[3].get_text(strip=True)
-            date = cells[4].get_text(strip=True)
-            ministry = cells[5].get_text(strip=True)
-            link_tag = cells[7].find('a', href=True)
-            pdf_url = urllib.parse.urljoin(BASE_URL, link_tag['href']) if link_tag else None
-            records.append({
-                'question': question,
-                'session': session,
-                'date': date,
-                'ministry': ministry,
-                'pdf_url': pdf_url
+
+        for q in questions:
+            all_questions.append({
+                "question_no": q.get("questionNumber"),
+                "subject": q.get("subject"),
+                "loksabha": q.get("loksabhaNo"),
+                "session": q.get("sessionNumber"),
+                "member": q.get("questionByMemberNames"),
+                "ministry": q.get("ministry"),
+                "type": q.get("questionType"),
+                "pdf_url": q.get("pdfPath"),
+                "question_text": q.get("questionTitle"),
+                "date": q.get("answerDate"),
             })
-    st.write(f"Fetched {len(records)} records.")
-    return records
+        print(f"Fetched page {page}: {len(questions)} questions.")
+    print(f"Total questions fetched: {len(all_questions)}")
+    return all_questions
 
 # --- Build FAISS vector store from filtered records ---
 @st.cache_resource
@@ -122,7 +123,7 @@ def init_agent():
 st.title("Parliamentary Ministry Q&A Assistant")
 
 # Load and cache all records once
-all_records = fetch_all_records()
+all_records = fetch_all_questions()
 if not all_records:
     st.error("Unable to fetch Q&A records. Check site or network.")
     st.stop()
