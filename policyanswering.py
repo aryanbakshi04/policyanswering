@@ -32,7 +32,7 @@ def fetch_ministries():
     soup = BeautifulSoup(resp.text, 'html.parser')
     select = soup.find('select', {'name': 'field_department_tid'}) or soup.find('select', {'id': 'edit-field-department-tid'})
     options = select.find_all('option') if select else []
-    return [opt['value'] for opt in options if opt.get('value')]() for opt in options if opt.get('value')]
+    return ([opt['value'] for opt in options if opt.get('value')]() for opt in options if opt.get('value'))
 
 @st.cache_data(ttl=24*3600)
 def fetch_qna_records(ministry):
