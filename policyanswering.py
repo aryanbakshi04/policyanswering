@@ -32,7 +32,14 @@ def fetch_ministries():
     soup = BeautifulSoup(resp.text, 'html.parser')
     select = soup.find('select', {'name': 'field_department_tid'}) or soup.find('select', {'id': 'edit-field-department-tid'})
     options = select.find_all('option') if select else []
-    return ([opt['value'] for opt in options if opt.get('value')]() for opt in options if opt.get('value'))
+    # return a simple list of ministry values (pickle-serializable)
+    ministry_values = []
+    for opt in options:
+        val = opt.get('value')
+        if val:
+            ministry_values.append(val)
+    return ministry_values
+for opt in options if opt.get('value')]() for opt in options if opt.get('value')]
 
 @st.cache_data(ttl=24*3600)
 def fetch_qna_records(ministry):
@@ -144,4 +151,5 @@ if st.button("Get Ministry Response"):
             for url in {d.metadata.get('source_url') for d in docs}:
                 if url: st.markdown(f"- [Download PDF]({url})")
 
- 
+st.markdown("---")
+st.markdown("**How it works:** We scrape ministry Q&A entries across pages, index PDFs with FAISS, retrieve context (RAG), and generate answers with Gemini.")
