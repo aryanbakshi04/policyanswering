@@ -41,57 +41,42 @@ def detect_total_pages():
     return max(pages) if pages else 1
 
 @st.cache_data
-def fetch_all_items(max_pages):
+def fetch_all_items():
     items = []
     seen_pdfs = set()
+    page = 1
 
-    for page in range(1, max_pages + 1):
-        url = f"{BASE_LIST_URL}?page={page}"
-        resp = requests.get(url)
+    while True:
+        api_url = (
+            "https://sansad.in/api/question/getLSQpage"
+            f"?page={page}&lang=en&type=LSQ"
+        )
+        resp = requests.get(api_url)
         resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "html.parser")
-
-        # **Updated selector**: the Q&A rows live in a standard table
-        rows = soup.select("table.table-striped tbody tr")
-        st.write(f"Page {page}: found {len(rows)} rows")  # debug
-
+        data = resp.json()
+        rows = data.get("data", [])
         if not rows:
             break
 
         for row in rows:
-            # 5th column holds the detail link
-            link_cell = row.select_one("td:nth-of-type(5) a[href*='/ls/question/']")
-            if not link_cell:
-                continue
-
-            detail_url = urljoin(BASE_LIST_URL, link_cell["href"])
-            dresp = requests.get(detail_url)
-            dresp.raise_for_status()
-            dsoup = BeautifulSoup(dresp.text, "html.parser")
-
-            pdf_tag = dsoup.select_one("a[href$='.pdf']")
-            if not pdf_tag:
-                continue
-
-            pdf_url = urljoin(detail_url, pdf_tag["href"])
-            if pdf_url in seen_pdfs:
+            ministry    = row.get("ministryName", "").strip()
+            session     = row.get("lakshadSession", "").strip() or row.get("session", "").strip()
+            q_date      = row.get("date", "").strip()
+            pdf_url     = row.get("pdf", "").strip()
+            if not pdf_url or pdf_url in seen_pdfs:
                 continue
             seen_pdfs.add(pdf_url)
 
-            ministry   = dsoup.find("th", text="Ministry")   .find_next_sibling("td").get_text(strip=True)
-            session    = dsoup.find("th", text="Session")    .find_next_sibling("td").get_text(strip=True)
-            answer_date= dsoup.find("th", text="Answer Date").find_next_sibling("td").get_text(strip=True)
-
             items.append({
-                "pdf_url": pdf_url,
-                "ministry": ministry,
-                "session": session,
-                "answer_date": answer_date
+                "ministry":    ministry,
+                "session":     session,
+                "answer_date": q_date,
+                "pdf_url":     pdf_url
             })
-
-        st.write(f"Accumulated {len(items)} PDFs so far")  # debug
+        page += 1
 
     return items
+
 
 @st.cache_data
 def download_pdf(pdf_url):
@@ -142,8 +127,28 @@ def init_agent():
         markdown=False
     )
 
-st.set_page_config(page_title="Lok Sabha QA Assistant", layout="wide")
-st.title("Lok Sabha Q&A Assistant")
+# 1) Fetch all Q&A items from the JSON API
+items = fetch_all_items()
+if not items:
+    st.error("Failed to fetch any Q&A items. The API may have changed.")
+    st.stop()
+
+# 2) Build the FAISS vector store and init the Gemini agent
+vectordb = build_vectordb(items)
+if vectordb is None:
+    st.error("Failed to index any documents. Cannot answer queries.")
+    st.stop()
+agent = init_agent()
+
+# 3) Populate the ministry dropdown from your fetched data
+ministries   = sorted({it["ministry"] for it in items})
+selected_min = st.selectbox("Select Ministry", ["All"] + ministries)
+
+# — now your UI inputs come next —
+question = st.text_area("Enter your parliamentary question:")
+if st.button("Get Answer"):
+    # … your existing retrieval & generation logic here …
+
 
 # 1. Detect total pages
 total_pages = detect_total_pages()
@@ -192,9 +197,9 @@ if st.button("Get Answer"):
         answer = getattr(response, "content", str(response))
 
         # 7. Display
-        st.subheader("📝 Answer")
+        st.subheader("Response")
         st.write(answer)
-        st.subheader("📄 Sources")
+        st.subheader("Sources:")
         for d in docs:
             md = d.metadata
             st.markdown(f"- Session: {md['session']} | Date: {md['answer_date']}  ")
