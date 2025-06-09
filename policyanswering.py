@@ -136,8 +136,7 @@ if st.button("Get the Response"):
         st.error("cannot answer this query")
         st.stop()
     else:
-
-    docs = vectordb.similarity_search(question, k=10)
+        docs = vectordb.similarity_search(question, k=10)
     if selected_min != "All":
         docs = [d for d in docs if d.metadata["ministry"] == selected_min]
     docs = docs[:4]
