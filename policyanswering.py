@@ -57,10 +57,15 @@ def fetch_all_questions(loksabha_no=18, session_no=4, max_pages=625, page_size=1
         else:
             questions = []
 
+        st.write([q.get("ministry") for q in questions[:5]])
+        
         if not questions:
             break
 
         for q in questions:
+            ministry=q.get("ministry")
+            if not ministry:
+                continue
             all_questions.append({
                 "question_no": q.get("quesNo"),
                 "subject": q.get("subjects"),
@@ -74,7 +79,10 @@ def fetch_all_questions(loksabha_no=18, session_no=4, max_pages=625, page_size=1
                 "date": q.get("date"),
             })
     return all_questions
-    
+
+all_records = fetch_all_questions()
+st.write([rec['ministry'] for rec in all_records[:10]])  # Show first 10 ministries
+
 # --- Build FAISS vector store from filtered records ---
 @st.cache_resource
 def build_vectorstore(records):
@@ -131,8 +139,12 @@ st.title("Parliamentary Ministry Q&A Assistant")
 
 # Load and cache all records once
 all_records = fetch_all_questions()
-if not all_records:
-    st.error("Unable to fetch Q&A records. Check site or network.")
+# Add the debug print right after fetching
+ministries = sorted({rec['ministry'] for rec in all_records if rec['ministry']})
+st.write("Ministries found:", ministries)
+
+if not ministries:
+    st.error("No ministries found in fetched records. Check your API or extraction logic.")
     st.stop()
 
 # Dropdown of ministries
