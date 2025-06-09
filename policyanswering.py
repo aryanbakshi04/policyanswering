@@ -121,16 +121,21 @@ st.title("Lok Sabha Q&A Assistant")
 total_pages = detect_total_pages()
 items = fetch_all_items(total_pages)
 vectordb = build_vectordb(items)
+if vectordb is None:
+    st.error("Failed to index any documents. Cannot answer queries.")
+    st.stop()
+    
 agent   = init_agent()
 
 ministries = sorted({it["ministry"] for it in items})
 selected_min = st.selectbox("Select Ministry", ["All"] + ministries)
 
 question = st.text_area("Enter your parliamentary question:")
-if st.button("Get Answer"):
+if st.button("Get the Response"):
     if not question.strip():
         st.error("cannot answer this query")
         st.stop()
+    else:
 
     docs = vectordb.similarity_search(question, k=10)
     if selected_min != "All":
