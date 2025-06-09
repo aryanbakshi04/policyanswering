@@ -17,7 +17,7 @@ from langchain_community.vectorstores import FAISS
 from agno.agent import Agent
 from agno.models.google import Gemini
 
- 
+# Configuration
 BASE_URL = "https://sansad.in/ls/questions/questions-and-answers"
 PDF_CACHE_DIR = "pdf_cache_sansad"
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
@@ -30,10 +30,9 @@ def fetch_ministries():
     resp = requests.get(BASE_URL)
     resp.raise_for_status()
     soup = BeautifulSoup(resp.text, 'html.parser')
-  
-    select = soup.find('select', {'id': 'edit-field-department-tid'})
+    select = soup.find('select', {'name': 'field_department_tid'}) or soup.find('select', {'id': 'edit-field-department-tid'})
     options = select.find_all('option') if select else []
-    return [opt.text.strip() for opt in options if opt.get('value')]
+    return [opt['value'] for opt in options if opt.get('value')]() for opt in options if opt.get('value')]
 
 @st.cache_data(ttl=24*3600)
 def fetch_qna_records(ministry):
@@ -46,26 +45,28 @@ def fetch_qna_records(ministry):
         if resp.status_code != 200:
             break
         soup = BeautifulSoup(resp.text, 'html.parser')
-        rows = soup.select('div.view-content .views-row')
+        rows = soup.select('div.views-row')
         if not rows:
             break
         for row in rows:
-            
-            q = row.select_one('.views-field-field-question-content .field-content')
-           
-            s = row.select_one('.views-field-field-parallel-session-tid .field-content')
-      
-            d = row.select_one('.views-field-created .field-content')
-          
-            link = row.select_one('.views-field-field-version-file a[href$=".pdf"]')
+            q_elem = row.select_one('.views-field-field-question-content .field-content') or row.select_one('.views-field-field-question .field-content')
+            s_elem = row.select_one('.views-field-field-parallel-session-tid .field-content') or row.select_one('.views-field-field-parliament-session .field-content')
+            d_elem = row.select_one('.views-field-created .field-content')
+            link = row.find('a', href=lambda h: h and h.lower().endswith('.pdf'))
+            if not (q_elem and s_elem and d_elem):
+                contents = [fc.get_text(strip=True) for fc in row.select('.field-content')]
+                if len(contents) >= 3:
+                    q_text = contents[0]
+                    s_text = contents[-2]
+                    d_text = contents[-1]
+                else:
+                    continue
+            else:
+                q_text = q_elem.get_text(strip=True)
+                s_text = s_elem.get_text(strip=True)
+                d_text = d_elem.get_text(strip=True)
             pdf_url = urllib.parse.urljoin(BASE_URL, link['href']) if link else None
-            if q and s and d:
-                records.append({
-                    'question': q.get_text(strip=True),
-                    'session': s.get_text(strip=True),
-                    'date': d.get_text(strip=True),
-                    'pdf_url': pdf_url
-                })
+            records.append({'question': q_text,'session': s_text,'date': d_text,'pdf_url': pdf_url})
         page += 1
     return records
 
@@ -101,7 +102,7 @@ def init_agent():
         markdown=False
     )
 
-
+# App UI
 st.title("Parliamentary Ministry Q&A Assistant")
 ministry_list = fetch_ministries()
 selected_ministry = st.sidebar.selectbox("Select Ministry", ministry_list)
@@ -134,11 +135,13 @@ if st.button("Get Ministry Response"):
             response = st.session_state.agent.run(prompt)
             answer = response.content if hasattr(response, 'content') else str(response)
 
-            st.subheader("Response")
+            st.subheader("📝 Answer")
             st.write(answer)
-            st.subheader("Details")
+            st.subheader("📋 Details")
             st.write(f"**Session:** {docs[0].metadata.get('session')}  ")
             st.write(f"**Date:** {docs[0].metadata.get('date')}  ")
-            st.subheader("Source PDFs")
+            st.subheader("📄 Source PDFs")
             for url in {d.metadata.get('source_url') for d in docs}:
                 if url: st.markdown(f"- [Download PDF]({url})")
+
+ 
