@@ -39,7 +39,7 @@ def fetch_ministries():
         if val:
             ministry_values.append(val)
     return ministry_values
-for opt in options if opt.get('value')]() for opt in options if opt.get('value')]
+
 
 @st.cache_data(ttl=24*3600)
 def fetch_qna_records(ministry):
