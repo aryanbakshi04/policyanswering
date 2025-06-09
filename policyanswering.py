@@ -39,42 +39,41 @@ def fetch_all_questions(lokNo=18, sessionNo=4, max_pages=625, page_size=10, loca
             resp = requests.get(API_URL, params=params, timeout=15)
             resp.raise_for_status()
             data = resp.json()
+            if page == 1:
+                st.write("API response page 1:", data)
         except Exception as e:
             st.warning(f"Error fetching page {page}: {e}")
             break
 
-        # --- Correct parsing for your API response ---
+        # --- Robust Extraction ---
         questions = []
         if isinstance(data, list):
             # Your API returns a list of dicts, each with 'listOfQuestions'
             for item in data:
-                if isinstance(item, dict) and "listOfQuestions" in item:
-                    item_questions = item["listOfQuestions"]
-                    # Ensure it's a list and not None
-                    if isinstance(item_questions, list):
-                        questions.extend(item_questions)
+                if isinstance(item, dict):
+                    qlist = item.get("listOfQuestions", [])
+                    if isinstance(qlist, list):
+                        questions.extend([q for q in qlist if isinstance(q, dict)])
         elif isinstance(data, dict):
-            # Fallback for unexpected dict responses
+            # Fallback for dict responses (old style)
             data_obj = data.get("data", {})
-            if isinstance(data_obj, dict) and "listOfQuestions" in data_obj:
-                item_questions = data_obj["listOfQuestions"]
-                if isinstance(item_questions, list):
-                    questions = item_questions
+            if isinstance(data_obj, dict):
+                qlist = data_obj.get("listOfQuestions", [])
+                if isinstance(qlist, list):
+                    questions.extend([q for q in qlist if isinstance(q, dict)])
+
+        if page == 1:
+            st.write("Questions extracted:", questions[:3])
+            for idx, q in enumerate(questions[:3]):
+                st.write(f"Type of q[{idx}]:", type(q), "Value:", q)
 
         if not questions:
-            # Stop if no questions found on this page, assuming no more data
             break
 
-        # Debug: Print the first 3 questions on the first page to inspect structure
-        if page == 1:
-            st.write("First 3 questions (parsed):", questions[:3])
-
         for q in questions:
-            if not isinstance(q, dict):
-                continue  # Skip None or invalid question blocks
             ministry = q.get("ministry")
             if not ministry:
-                continue  # Skip if no ministry field
+                continue  # skip if no ministry
             all_questions.append({
                 "question_no": q.get("quesNo"),
                 "subject": q.get("subjects"),
@@ -87,7 +86,6 @@ def fetch_all_questions(lokNo=18, sessionNo=4, max_pages=625, page_size=10, loca
                 "question_text": q.get("questionText"),
                 "date": q.get("date"),
             })
-    # Debug: Show all ministries found
     st.write("Sample ministries:", list({q['ministry'] for q in all_questions if q.get('ministry')})[:10])
     return all_questions
 # -------------------------------------------------------------------------------------
