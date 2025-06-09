@@ -43,7 +43,6 @@ def fetch_all_questions(lokNo=18, sessionNo=4, max_pages=625, page_size=10, loca
             st.warning(f"Error fetching page {page}: {e}")
             break
 
-        # --- Fix: handle list at the top level ---
         questions = []
         if isinstance(data, list):
             for item in data:
@@ -57,10 +56,11 @@ def fetch_all_questions(lokNo=18, sessionNo=4, max_pages=625, page_size=10, loca
         if not questions:
             break
 
-        # for q in questions:
-        #     ministry = q.get("ministry")
-        #     if not ministry:
-        #         continue  # skip if no ministry
+        # ---------- FIXED INDENTATION HERE -----------
+        for q in questions:
+            ministry = q.get("ministry")
+            if not ministry:
+                continue  # skip if no ministry
             all_questions.append({
                 "question_no": q.get("quesNo"),
                 "subject": q.get("subjects"),
@@ -73,6 +73,7 @@ def fetch_all_questions(lokNo=18, sessionNo=4, max_pages=625, page_size=10, loca
                 "question_text": q.get("questionText"),
                 "date": q.get("date"),
             })
+        # ---------------------------------------------
     return all_questions
 # -------------------------------------------------------------------------------------
 all_records = fetch_all_questions()
