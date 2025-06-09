@@ -23,14 +23,14 @@ GEMINI_MODEL_NAME = "gemini-2.0-flash-exp"
 API_URL = "https://sansad.in/api_ls/question/qetFilteredQuestionsAns"
 
 os.makedirs(PDF_CACHE_DIR, exist_ok=True)
-
+# ---------------------------------------------------------------------
 @st.cache_data(ttl=24*3600)
-def fetch_all_questions(loksabha_no=18, session_no=4, max_pages=625, page_size=10, locale="en"):
+def fetch_all_questions(lokNo=18, sessionNo=4, max_pages=625, page_size=10, locale="en"):
     all_questions = []
     for page in range(1, max_pages + 1):
         params = {
-            "loksabhaNo": loksabha_no,
-            "sessionNumber": session_no,
+            "loksabhaNo": lokNo,
+            "sessionNumber": sessionNo,
             "pageNo": page,
             "locale": locale,
             "pageSize": page_size
@@ -57,10 +57,10 @@ def fetch_all_questions(loksabha_no=18, session_no=4, max_pages=625, page_size=1
         if not questions:
             break
 
-        for q in questions:
-            ministry = q.get("ministry")
-            if not ministry:
-                continue  # skip if no ministry
+        # for q in questions:
+        #     ministry = q.get("ministry")
+        #     if not ministry:
+        #         continue  # skip if no ministry
             all_questions.append({
                 "question_no": q.get("quesNo"),
                 "subject": q.get("subjects"),
@@ -74,7 +74,7 @@ def fetch_all_questions(loksabha_no=18, session_no=4, max_pages=625, page_size=1
                 "date": q.get("date"),
             })
     return all_questions
-
+# -------------------------------------------------------------------------------------
 all_records = fetch_all_questions()
 ministries = sorted({rec['ministry'] for rec in all_records if rec['ministry']})
 st.write("Ministries found:", ministries)
