@@ -29,7 +29,6 @@ def detect_total_pages():
     resp = requests.get(BASE_LIST_URL)
     resp.raise_for_status()
     soup = BeautifulSoup(resp.text, "html.parser")
-    # The pagination block on Sansad uses <ul class="pagination">
     pager = soup.select_one("ul.pagination")
     if not pager:
         return 1
@@ -45,7 +44,6 @@ def fetch_all_items():
     items = []
     seen_pdfs = set()
     page = 1
-
     while True:
         api_url = (
             "https://sansad.in/api/question/getLSQpage"
@@ -57,7 +55,6 @@ def fetch_all_items():
         rows = data.get("data", [])
         if not rows:
             break
-
         for row in rows:
             ministry    = row.get("ministryName", "").strip()
             session     = row.get("lakshadSession", "").strip() or row.get("session", "").strip()
@@ -66,7 +63,6 @@ def fetch_all_items():
             if not pdf_url or pdf_url in seen_pdfs:
                 continue
             seen_pdfs.add(pdf_url)
-
             items.append({
                 "ministry":    ministry,
                 "session":     session,
@@ -74,9 +70,7 @@ def fetch_all_items():
                 "pdf_url":     pdf_url
             })
         page += 1
-
     return items
-
 
 @st.cache_data
 def download_pdf(pdf_url):
@@ -93,7 +87,6 @@ def download_pdf(pdf_url):
 def build_vectordb(items):
     if not items:
         return None
-
     docs = []
     for it in items:
         pdf_path = download_pdf(it["pdf_url"])
@@ -102,15 +95,12 @@ def build_vectordb(items):
         for p in pages:
             p.metadata.update(it)
             docs.append(p)
-
     if not docs:
         return None
-
     splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
     chunks   = splitter.split_documents(docs)
     if not chunks:
         return None
-
     embeddings = SentenceTransformerEmbeddings(model_name=EMBEDDING_MODEL)
     return FAISS.from_documents(chunks, embeddings)
 
@@ -127,35 +117,28 @@ def init_agent():
         markdown=False
     )
 
-# 1) Fetch all Q&A items from the JSON API
 items = fetch_all_items()
 if not items:
     st.error("Failed to fetch any Q&A items. The API may have changed.")
     st.stop()
 
-# 2) Build the FAISS vector store and init the Gemini agent
 vectordb = build_vectordb(items)
 if vectordb is None:
     st.error("Failed to index any documents. Cannot answer queries.")
     st.stop()
 agent = init_agent()
 
-# 3) Populate the ministry dropdown from your fetched data
 ministries   = sorted({it["ministry"] for it in items})
 selected_min = st.selectbox("Select Ministry", ["All"] + ministries)
 
-# — now your UI inputs come next —
 question = st.text_area("Enter your parliamentary question:")
 if st.button("Get Answer"):
-    # … your existing retrieval & generation logic here …
+    pass
 
-
-# 1. Detect total pages
 total_pages = detect_total_pages()
 st.sidebar.write(f"Detected {total_pages} pages of Q&A listings")
 
-# 2. Fetch & index everything up front
-items   = fetch_all_items(total_pages)
+items   = fetch_all_items()
 vectordb= build_vectordb(items)
 if vectordb is None:
     st.error("Failed to index any documents. Please verify selectors or site structure.")
@@ -163,27 +146,21 @@ if vectordb is None:
 
 agent   = init_agent()
 
-# 3. Ministry dropdown (all ministries seen in the crawl)
 ministries = sorted({it["ministry"] for it in items})
 selected_min = st.sidebar.selectbox("Select Ministry", ["All"] + ministries)
 
-# 4. User input
 question = st.text_area("Enter your parliamentary question:")
 if st.button("Get Answer"):
     if not question:
         st.error("cannot answer this query")
         st.stop()
-
-    # 5. RAG retrieval
     docs = vectordb.similarity_search(question, k=10)
     if selected_min != "All":
         docs = [d for d in docs if d.metadata["ministry"] == selected_min]
     docs = docs[:4]
-
     if not docs:
         st.error("cannot answer this query")
     else:
-        # 6. Build prompt & run Gemini
         context = "\n\n".join(
             f"[{d.metadata['session']} | {d.metadata['answer_date']}] {d.page_content.strip()}"
             for d in docs
@@ -195,8 +172,6 @@ if st.button("Get Answer"):
         )
         response = agent.run(prompt)
         answer = getattr(response, "content", str(response))
-
-        # 7. Display
         st.subheader("Response")
         st.write(answer)
         st.subheader("Sources:")
