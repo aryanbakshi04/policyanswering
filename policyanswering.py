@@ -25,9 +25,9 @@ API_URL = "https://sansad.in/api_ls/question/qetFilteredQuestionsAns"
 os.makedirs(PDF_CACHE_DIR, exist_ok=True)
 
 @st.cache_data(ttl=24*3600)
-def fetch_all_questions(loksabha_no=18, session_no=4, max_pages=3, page_size=10, locale="en"):
+def fetch_all_questions(loksabha_no=18, session_no=4, max_pages=625, page_size=10, locale="en"):
     all_questions = []
-    for page in range(1, max_pages + 1):     # <-- start from 1, not 0
+    for page in range(1, max_pages + 1):
         params = {
             "loksabhaNo": loksabha_no,
             "sessionNumber": session_no,
@@ -39,23 +39,15 @@ def fetch_all_questions(loksabha_no=18, session_no=4, max_pages=3, page_size=10,
             resp = requests.get(API_URL, params=params, timeout=15)
             resp.raise_for_status()
             data = resp.json()
-            if page == 1:
-                st.write(data)
         except Exception as e:
             st.warning(f"Error fetching page {page}: {e}")
             break
 
-        # ---- robust handling ----
-        if isinstance(data, dict):
-            data_obj = data.get("data", {})
-            if isinstance(data_obj, dict):
-                questions = data_obj.get("questions", [])
-            elif isinstance(data_obj, list):
-                questions = data_obj
-            else:
-                questions = []
-        elif isinstance(data, list):
-            questions = data
+        data_obj = data.get("data", {})
+        if isinstance(data_obj, dict):
+            questions = data_obj.get("listOfQuestions", [])
+        elif isinstance(data_obj, list):
+            questions = data_obj
         else:
             questions = []
 
@@ -63,28 +55,20 @@ def fetch_all_questions(loksabha_no=18, session_no=4, max_pages=3, page_size=10,
             break
 
         for q in questions:
-            pdf_url = q.get("pdfPath")
-            if pdf_url and not pdf_url.startswith("http"):
-                pdf_url = "https://sansad.in" + pdf_url
             all_questions.append({
-                "question_no": q.get("questionNumber"),
-                "subject": q.get("subject"),
-                "loksabha": q.get("loksabhaNo"),
-                "session": q.get("sessionNumber"),
-                "member": q.get("questionByMemberNames"),
-                "ministry": q.get("ministry") or q.get("ministryName"),
-                "type": q.get("questionType"),
-                "pdf_url": pdf_url,
-                "question_text": q.get("questionTitle"),
-                "date": q.get("answerDate"),
+                "question_no": q.get("quesNo"),
+                "subject": q.get("subjects"),
+                "loksabha": q.get("lokNo"),
+                "session": q.get("sessionNo"),
+                "member": ", ".join(q.get("member", [])) if q.get("member") else None,
+                "ministry": q.get("ministry"),
+                "type": q.get("type"),
+                "pdf_url": q.get("questionsFilePath"),
+                "question_text": q.get("questionText"),
+                "date": q.get("date"),
             })
     return all_questions
-# -----------------------------------
-all_records = fetch_all_questions()
-st.write(f"Fetched {len(all_records)} total records")
-if len(all_records) > 0:
-    st.write(all_records[:3])  # Show the first 3 records to inspect their structure
-# ----------------------------------------
+    
 # --- Build FAISS vector store from filtered records ---
 @st.cache_resource
 def build_vectorstore(records):
