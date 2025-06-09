@@ -43,11 +43,17 @@ def fetch_all_questions(loksabha_no=18, session_no=4, max_pages=625, page_size=1
             st.warning(f"Error fetching page {page}: {e}")
             break
 
-        data_obj = data.get("data", {})
-        if isinstance(data_obj, dict):
-            questions = data_obj.get("listOfQuestions", [])
-        elif isinstance(data_obj, list):
-            questions = data_obj
+        # Check for dict or list at the top level
+        if isinstance(data, dict):
+            data_obj = data.get("data", {})
+            if isinstance(data_obj, dict):
+                questions = data_obj.get("listOfQuestions", [])
+            elif isinstance(data_obj, list):
+                questions = data_obj
+            else:
+                questions = []
+        elif isinstance(data, list):
+            questions = data
         else:
             questions = []
 
