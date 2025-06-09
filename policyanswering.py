@@ -4,9 +4,7 @@ try:
 except ImportError:
     pass
 
-import os
-import streamlit as st
-import requests
+import os, streamlit as st, requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 
@@ -33,9 +31,9 @@ GEMINI_MODEL  = "gemini-2.0-flash-exp"
 os.makedirs(PDF_CACHE_DIR, exist_ok=True)
 
 def detect_total_pages():
-    r = requests.get(BASE_URL, headers=HEADERS)
-    r.raise_for_status()
-    soup = BeautifulSoup(r.text, "html.parser")
+    resp = requests.get(BASE_URL, headers=HEADERS)
+    resp.raise_for_status()
+    soup = BeautifulSoup(resp.text, "html.parser")
     pager = soup.select_one("ul.pagination")
     if not pager:
         return 1
@@ -44,19 +42,19 @@ def detect_total_pages():
 
 @st.cache_data
 def fetch_all_items():
-    items, seen = [], set()
     total = detect_total_pages()
-    for page in range(1, total + 1):
-        url = f"{BASE_URL}?page={page}"
-        r = requests.get(url, headers=HEADERS)
+    items, seen = [], set()
+    for pg in range(1, total+1):
+        listing = f"{BASE_URL}?page={pg}"
+        r = requests.get(listing, headers=HEADERS)
         r.raise_for_status()
-        rows = BeautifulSoup(r.text, "html.parser")\
+        rows = BeautifulSoup(r.text, "html.parser") \
                .select("table.table-striped tbody tr")
         if not rows:
             break
         for row in rows:
             link = row.select_one("td:nth-of-type(5) a")
-            if not link:
+            if not link: 
                 continue
             detail_url = urljoin(BASE_URL, link["href"])
             dr = requests.get(detail_url, headers=HEADERS)
@@ -69,9 +67,9 @@ def fetch_all_items():
             if pdf_url in seen:
                 continue
             seen.add(pdf_url)
-            ministry    = ds.find("th", text="Ministry").find_next_sibling("td").get_text(strip=True)
-            session     = ds.find("th", text="Session").find_next_sibling("td").get_text(strip=True)
-            answer_date = ds.find("th", text="Answer Date").find_next_sibling("td").get_text(strip=True)
+            ministry    = ds.find("th", text="Ministry").find_next_sibling("td").text.strip()
+            session     = ds.find("th", text="Session").find_next_sibling("td").text.strip()
+            answer_date = ds.find("th", text="Answer Date").find_next_sibling("td").text.strip()
             items.append({
                 "pdf_url":     pdf_url,
                 "ministry":    ministry,
@@ -81,14 +79,14 @@ def fetch_all_items():
     return items
 
 @st.cache_data
-def download_pdf(pdf_url):
-    fname = os.path.basename(pdf_url)
+def download_pdf(url):
+    fname = os.path.basename(url)
     path = os.path.join(PDF_CACHE_DIR, fname)
     if not os.path.exists(path):
-        r = requests.get(pdf_url, headers=HEADERS)
-        r.raise_for_status()
+        resp = requests.get(url, headers=HEADERS)
+        resp.raise_for_status()
         with open(path, "wb") as f:
-            f.write(r.content)
+            f.write(resp.content)
     return path
 
 @st.cache_resource
@@ -98,18 +96,17 @@ def build_vectordb(items):
     docs = []
     for it in items:
         pdf_path = download_pdf(it["pdf_url"])
-        loader   = PyPDFLoader(pdf_path)
-        for page in loader.load():
-            page.metadata.update(it)
-            docs.append(page)
+        for doc in PyPDFLoader(pdf_path).load():
+            doc.metadata.update(it)
+            docs.append(doc)
     if not docs:
         return None
-    splitter  = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
-    chunks    = splitter.split_documents(docs)
+    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
+    chunks   = splitter.split_documents(docs)
     if not chunks:
         return None
-    embedder  = SentenceTransformerEmbeddings(model_name=EMBED_MODEL)
-    return FAISS.from_documents(chunks, embedder)
+    emb      = SentenceTransformerEmbeddings(model_name=EMBED_MODEL)
+    return FAISS.from_documents(chunks, emb)
 
 @st.cache_resource
 def init_agent():
@@ -117,8 +114,8 @@ def init_agent():
         model=Gemini(id=GEMINI_MODEL),
         description="Answer Lok Sabha questions as the selected ministry.",
         instructions=[
-            "Use provided PDF snippets as context.",
-            "Be formal, positive, solution-oriented, and focus on public welfare."
+            "Use PDF context to ground answers.",
+            "Be formal, solution-oriented, positive, and focus on public welfare."
         ],
         show_tool_calls=False,
         markdown=False
@@ -131,12 +128,12 @@ if not items:
 
 vectordb = build_vectordb(items)
 if vectordb is None:
-    st.error("Failed to build index; no text extracted.")
+    st.error("Index build failed; no text extracted.")
     st.stop()
 
 agent = init_agent()
-ministries = sorted({it["ministry"] for it in items})
-selected_min = st.selectbox("Select Ministry", ["All"] + ministries)
+ministries = sorted({i["ministry"] for i in items})
+selected = st.selectbox("Select Ministry", ["All"] + ministries)
 
 question = st.text_area("Enter your parliamentary question:")
 if st.button("Get Answer"):
@@ -144,8 +141,8 @@ if st.button("Get Answer"):
         st.error("cannot answer this query")
         st.stop()
     docs = vectordb.similarity_search(question, k=10)
-    if selected_min != "All":
-        docs = [d for d in docs if d.metadata["ministry"] == selected_min]
+    if selected != "All":
+        docs = [d for d in docs if d.metadata["ministry"] == selected]
     docs = docs[:4]
     if not docs:
         st.error("cannot answer this query")
@@ -156,7 +153,7 @@ if st.button("Get Answer"):
     )
     prompt = (
         f"Context:\n{context}\n\n"
-        f"Answer as the Ministry of {selected_min}: Provide a formal, solution-oriented response "
+        f"Answer as the Ministry of {selected}: Provide a formal, solution-oriented response "
         f"focusing on public interest. Include session, date, and source PDF link.\nQuestion: {question}"
     )
     response = agent.run(prompt)
