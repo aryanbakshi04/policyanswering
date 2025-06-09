@@ -5,6 +5,7 @@ except ImportError:
     pass
 
 import os
+import time
 import streamlit as st
 import requests
 from bs4 import BeautifulSoup
@@ -24,7 +25,7 @@ GEMINI_MODEL_NAME = "gemini-2.0-flash-exp"
 
 os.makedirs(PDF_CACHE_DIR, exist_ok=True)
 
-@st.cache_data
+@st.cache_data(ttl=24*3600)
 def fetch_ministries():
     resp = requests.get(BASE_URL)
     resp.raise_for_status()
@@ -33,26 +34,39 @@ def fetch_ministries():
     options = select.find_all('option') if select else []
     return [opt.text.strip() for opt in options if opt.get('value')]
 
-@st.cache_data
-def fetch_qna_records(ministry, max_pages=50):
+@st.cache_data(ttl=24*3600)
+def fetch_qna_records(ministry, max_pages=100, batch_size=10):
     records = []
     import urllib.parse
-    for page in range(max_pages):
-        params = {'ministry': ministry, 'page': page}
-        resp = requests.get(BASE_URL, params=params)
-        if resp.status_code != 200:
+    page = 0
+    while page < max_pages:
+        try:
+            for offset in range(batch_size):
+                params = {'ministry': ministry, 'page': page + offset}
+                resp = requests.get(BASE_URL, params=params)
+                if resp.status_code != 200:
+                    return records
+                soup = BeautifulSoup(resp.text, 'html.parser')
+                entries = soup.select('div.qa-entry')
+                if not entries:
+                    return records
+                for r in entries:
+                    q = r.select_one('.question')
+                    s = r.select_one('.session')
+                    d = r.select_one('.date')
+                    l = r.select_one('a[href$=".pdf"]')
+                    if q and s and d:
+                        pdf_url = urllib.parse.urljoin(BASE_URL, l['href']) if l else None
+                        records.append({
+                            'question': q.get_text(strip=True),
+                            'session': s.get_text(strip=True),
+                            'date': d.get_text(strip=True),
+                            'pdf_url': pdf_url
+                        })
+            page += batch_size
+            time.sleep(1)  
+        except Exception:
             break
-        soup = BeautifulSoup(resp.text, 'html.parser')
-        rows = soup.select('div.qa-entry')
-        if not rows:
-            break
-        for r in rows:
-            q_text = r.select_one('.question').get_text(strip=True)
-            session = r.select_one('.session').get_text(strip=True)
-            date = r.select_one('.date').get_text(strip=True)
-            link = r.select_one('a[href$=".pdf"]')
-            pdf_url = urllib.parse.urljoin(BASE_URL, link['href']) if link else None
-            records.append({'question': q_text, 'session': session, 'date': date, 'pdf_url': pdf_url})
     return records
 
 @st.cache_resource
@@ -82,7 +96,7 @@ def init_agent():
         model=Gemini(id=GEMINI_MODEL_NAME),
         description="Answers parliamentary ministry questions based on retrieved context.",
         instructions=[
-            "Use the retrieved context from ministry Q&A PDFs.",
+            "Use context from ministry Q&A PDFs.",
             "Provide formal, solution-oriented responses focused on public welfare."
         ],
         show_tool_calls=False,
@@ -90,15 +104,17 @@ def init_agent():
     )
 
 st.title("Parliamentary Ministry Q&A Assistant")
+
 ministry_list = fetch_ministries()
 selected_ministry = st.sidebar.selectbox("Select Ministry", ministry_list)
-max_pages = st.sidebar.slider("Pages to scan", 1, 100, 20)
+max_pages = st.sidebar.slider("Max pages to scan", 10, 200, 50, step=10)
+batch_size = st.sidebar.slider("Batch size for scraping", 5, 20, 10)
 
-if 'vectordb' not in st.session_state or st.session_state.get('ministry') != selected_ministry:
-    with st.spinner(f"Indexing Q&A PDFs for {selected_ministry}..."):
-        records = fetch_qna_records(selected_ministry, max_pages)
+if 'ministry' not in st.session_state or st.session_state['ministry'] != selected_ministry:
+    with st.spinner(f"Scraping Q&A for {selected_ministry}..."):
+        records = fetch_qna_records(selected_ministry, max_pages, batch_size)
         if not records:
-            st.error("cannot answer this query")
+            st.error("No Q&A items found. Check site structure or pagination.")
             st.stop()
         vectordb = build_vectorstore(records)
         st.session_state.vectordb = vectordb
@@ -121,11 +137,12 @@ if st.button("Get Ministry Response"):
             )
             response = st.session_state.agent.run(prompt)
             answer = response.content if hasattr(response, 'content') else str(response)
-            st.subheader("📝 Answer")
+            st.subheader("Response")
             st.write(answer)
-            st.subheader("📋 Details")
-            st.write(f"**Parliament Session:** {docs[0].metadata.get('session')}  ")
-            st.write(f"**Date Asked:** {docs[0].metadata.get('date')}  ")
-            st.subheader("📄 Source PDF(s)")
-            for url in {d.metadata.get('source_url') for d in docs if d.metadata.get('source_url')}: 
-                st.markdown(f"- [PDF Link]({url})")
+            st.subheader("Details")
+            st.write(f"**Session:** {docs[0].metadata.get('session')}  ")
+            st.write(f"**Date:** {docs[0].metadata.get('date')}  ")
+            st.subheader("Source PDF(s)")
+            for url in {d.metadata.get('source_url') for d in docs}:
+                if url:
+                    st.markdown(f"- [PDF Link]({url})")
