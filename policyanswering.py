@@ -24,7 +24,6 @@ API_URL = "https://sansad.in/api_ls/question/qetFilteredQuestionsAns"
 
 os.makedirs(PDF_CACHE_DIR, exist_ok=True)
 
-# --- Fetch all Q&A records via the API ---
 @st.cache_data(ttl=24*3600)
 def fetch_all_questions(loksabha_no=18, session_no=4, max_pages=625, page_size=10, locale="en"):
     all_questions = []
@@ -44,11 +43,17 @@ def fetch_all_questions(loksabha_no=18, session_no=4, max_pages=625, page_size=1
             st.warning(f"Error fetching page {page}: {e}")
             break
 
-        data_obj = data.get("data", {})
-        if isinstance(data_obj, dict):
-            questions = data_obj.get("questions", [])
-        elif isinstance(data_obj, list):
-            questions = data_obj
+        # ---- robust handling ----
+        if isinstance(data, dict):
+            data_obj = data.get("data", {})
+            if isinstance(data_obj, dict):
+                questions = data_obj.get("questions", [])
+            elif isinstance(data_obj, list):
+                questions = data_obj
+            else:
+                questions = []
+        elif isinstance(data, list):
+            questions = data
         else:
             questions = []
 
@@ -72,7 +77,6 @@ def fetch_all_questions(loksabha_no=18, session_no=4, max_pages=625, page_size=1
                 "date": q.get("answerDate"),
             })
     return all_questions
-    
 # --- Build FAISS vector store from filtered records ---
 @st.cache_resource
 def build_vectorstore(records):
