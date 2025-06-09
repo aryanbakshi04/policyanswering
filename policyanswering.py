@@ -41,7 +41,8 @@ def fetch_all_items(max_pages):
     for page in range(1, max_pages + 1):
         resp = requests.get(f"{BASE_LIST_URL}?page={page}")
         resp.raise_for_status()
-        rows = BeautifulSoup(resp.text, "html.parser").select("table.table-striped tbody tr")
+        rows = BeautifulSoup(resp.text, "html.parser")\
+               .select("table.table-striped tbody tr")
         if not rows:
             break
         for row in rows:
@@ -49,8 +50,7 @@ def fetch_all_items(max_pages):
             if not link:
                 continue
             detail_url = urljoin(BASE_LIST_URL, link["href"])
-            dresp = requests.get(detail_url)
-            dresp.raise_for_status()
+            dresp = requests.get(detail_url); dresp.raise_for_status()
             dsoup = BeautifulSoup(dresp.text, "html.parser")
             pdf_tag = dsoup.select_one("a[href$='.pdf']")
             if not pdf_tag:
@@ -59,9 +59,12 @@ def fetch_all_items(max_pages):
             if pdf_url in seen:
                 continue
             seen.add(pdf_url)
-            ministry = dsoup.find("th", text="Ministry").find_next_sibling("td").text.strip()
-            session  = dsoup.find("th", text="Session").find_next_sibling("td").text.strip()
-            date     = dsoup.find("th", text="Answer Date").find_next_sibling("td").text.strip()
+            ministry = dsoup.find("th", text="Ministry")\
+                          .find_next_sibling("td").text.strip()
+            session  = dsoup.find("th", text="Session")\
+                          .find_next_sibling("td").text.strip()
+            date     = dsoup.find("th", text="Answer Date")\
+                          .find_next_sibling("td").text.strip()
             items.append({
                 "pdf_url": pdf_url,
                 "ministry": ministry,
@@ -75,8 +78,7 @@ def download_pdf(pdf_url):
     fname = os.path.basename(pdf_url)
     path = os.path.join(PDF_CACHE_DIR, fname)
     if not os.path.exists(path):
-        r = requests.get(pdf_url)
-        r.raise_for_status()
+        r = requests.get(pdf_url); r.raise_for_status()
         with open(path, "wb") as f:
             f.write(r.content)
     return path
@@ -93,7 +95,8 @@ def build_vectordb(items):
             docs.append(page)
     if not docs:
         return None
-    chunks = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100).split_documents(docs)
+    chunks = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)\
+             .split_documents(docs)
     if not chunks:
         return None
     embeddings = SentenceTransformerEmbeddings(model_name=EMBEDDING_MODEL)
@@ -105,9 +108,11 @@ def init_agent():
         model=Gemini(id=GEMINI_MODEL_NAME),
         description="Answer Lok Sabha questions as the selected ministry.",
         instructions=[
-            "Use the provided PDF context.",
-            "Focus on public welfare, be solution-oriented and positive."
-        ]
+            "Use provided PDF context from past Q&As.",
+            "Be formal, solution-oriented, positive, and focus on public welfare."
+        ],
+        show_tool_calls=False,
+        markdown=False
     )
 
 st.set_page_config(page_title="Lok Sabha QA Assistant", layout="wide")
@@ -121,43 +126,38 @@ agent   = init_agent()
 ministries = sorted({it["ministry"] for it in items})
 selected_min = st.selectbox("Select Ministry", ["All"] + ministries)
 
-question = st.text_area("Enter Parliamentary Question")
+question = st.text_area("Enter your parliamentary question:")
 if st.button("Get Answer"):
     if not question.strip():
         st.error("cannot answer this query")
-    else:
-        docs = vectordb.similarity_search(question, k=10)
-        if selected_min != "All":
-            docs = [d for d in docs if d.metadata["ministry"] == selected_min]
-        docs = docs[:4]
-        if not docs:
-            st.error("cannot answer this query")
-        else:
-            context = "\n\n".join(
-                f"[{d.metadata['session']} | {d.metadata['answer_date']}] {d.page_content.strip()}"
-                for d in docs
-            )
-            prompt = (
-                f"Context:\n{context}\n\n"
-                f"Answer as {selected_min if selected_min!='All' else 'the selected ministry'}: "
-                f"Include session, date, and source PDF link. Question: {question}"
-            )
-            response = agent.run(prompt)
-            answer = getattr(response, "content", str(response))
-            st.subheader("Answer")
-            st.write(answer)
-            st.subheader("Sources")
-            for d in docs:
-                md = d.metadata
-                st.markdown(f"- Session: {md['session']} | Date: {md['answer_date']}  ")
-                st.markdown(f"  [PDF Source]({md['pdf_url']})")
+        st.stop()
 
-# st.markdown(
-#     """
-# Efficient large-scale page handling achieved by:
-# 1. Auto-detecting total pages from the site’s pagination.
-# 2. Early loop exit on empty pages.
-# 3. Caching fetch and vector-store steps to avoid re-scraping.
-# 4. Deduplicating PDF URLs during crawl.
-# """
-# )
+    docs = vectordb.similarity_search(question, k=10)
+    if selected_min != "All":
+        docs = [d for d in docs if d.metadata["ministry"] == selected_min]
+    docs = docs[:4]
+
+    if not docs:
+        st.error("cannot answer this query")
+    else:
+        context = "\n\n".join(
+            f"[{d.metadata['session']} | {d.metadata['answer_date']}] {d.page_content.strip()}"
+            for d in docs
+        )
+        prompt = (
+            f"Context:\n{context}\n\n"
+            f"Answer as the Ministry of {selected_min if selected_min!='All' else 'your selection'}: "
+            "Provide a formal, solution-oriented response focused on public interest. "
+            "Include Lok Sabha session, answer date, and source PDF link.\n"
+            f"Question: {question}"
+        )
+        response = agent.run(prompt)
+        answer = getattr(response, "content", str(response))
+        st.subheader("📝 Answer")
+        st.write(answer)
+
+        st.subheader("📄 Sources")
+        for d in docs:
+            md = d.metadata
+            st.markdown(f"- Session: {md['session']} | Date: {md['answer_date']}")
+            st.markdown(f"  [PDF Source]({md['pdf_url']})")
