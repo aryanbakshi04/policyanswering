@@ -43,36 +43,31 @@ def fetch_all_questions(loksabha_no=18, session_no=4, max_pages=625, page_size=1
             st.warning(f"Error fetching page {page}: {e}")
             break
 
-        # Check for dict or list at the top level
-        if isinstance(data, dict):
+        # --- Fix: handle list at the top level ---
+        questions = []
+        if isinstance(data, list):
+            for item in data:
+                if isinstance(item, dict) and "listOfQuestions" in item:
+                    questions.extend(item["listOfQuestions"])
+        elif isinstance(data, dict):
             data_obj = data.get("data", {})
-            if isinstance(data_obj, dict):
-                questions = data_obj.get("listOfQuestions", [])
-            elif isinstance(data_obj, list):
-                questions = data_obj
-            else:
-                questions = []
-        elif isinstance(data, list):
-            questions = data
-        else:
-            questions = []
+            if isinstance(data_obj, dict) and "listOfQuestions" in data_obj:
+                questions = data_obj["listOfQuestions"]
 
-        st.write([q.get("ministry") for q in questions[:5]])
-        
         if not questions:
             break
 
         for q in questions:
-            ministry=q.get("ministry")
+            ministry = q.get("ministry")
             if not ministry:
-                continue
+                continue  # skip if no ministry
             all_questions.append({
                 "question_no": q.get("quesNo"),
                 "subject": q.get("subjects"),
                 "loksabha": q.get("lokNo"),
                 "session": q.get("sessionNo"),
                 "member": ", ".join(q.get("member", [])) if q.get("member") else None,
-                "ministry": q.get("ministry"),
+                "ministry": ministry,
                 "type": q.get("type"),
                 "pdf_url": q.get("questionsFilePath"),
                 "question_text": q.get("questionText"),
@@ -81,7 +76,8 @@ def fetch_all_questions(loksabha_no=18, session_no=4, max_pages=625, page_size=1
     return all_questions
 
 all_records = fetch_all_questions()
-st.write([rec['ministry'] for rec in all_records[:10]])  # Show first 10 ministries
+ministries = sorted({rec['ministry'] for rec in all_records if rec['ministry']})
+st.write("Ministries found:", ministries)
 
 # --- Build FAISS vector store from filtered records ---
 @st.cache_resource
