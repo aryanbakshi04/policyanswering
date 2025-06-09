@@ -9,4 +9,5 @@ sentence-transformers
 agno
 google-auth
 google-auth-oauthlib
+google-genai
 python-dotenv
