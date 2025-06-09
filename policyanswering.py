@@ -15,6 +15,7 @@ from langchain_community.vectorstores import FAISS
 
 from agno.agent import Agent
 from agno.models.google import Gemini
+from playwright.sync_api import sync_playwright
 
 BASE_URL = "https://sansad.in/ls/questions/questions-and-answers"
 HEADERS = {
@@ -28,45 +29,47 @@ GEMINI_MODEL = "gemini-2.0-flash-exp"
 
 os.makedirs(PDF_CACHE_DIR, exist_ok=True)
 
-@st.cache_data(show_spinner="Fetching parliamentary questions...")
+from playwright.sync_api import sync_playwright
+
+@st.cache_data(show_spinner="Fetching parliamentary questions in headless browser…")
 def fetch_all_items():
-    items = []
-    session = requests.Session()
-    session.headers.update(HEADERS)
-    
-    # Fetch just the first page to start
-    try:
-        listing = f"{BASE_URL}"
-        r = session.get(listing, timeout=10)
-        r.raise_for_status()
-        soup = BeautifulSoup(r.text, "html.parser")
-        
-        # Find all rows in the main table
-        rows = soup.select("table.table-striped tbody tr")
-        
-        for row in rows:
-            try:
-                # Get the last column which contains the PDF link
-                last_column = row.select("td")[-1]
-                pdf_tag = last_column.select_one("a[href$='.pdf']")
-                
-                if pdf_tag:
-                    pdf_url = urljoin(BASE_URL, pdf_tag["href"])
-                    
-                    # Get subject from the third column
-                    subject = row.select("td")[2].text.strip()
-                    
-                    items.append({
-                        "pdf_url": pdf_url,
-                        "subject": subject
-                    })
-            except Exception as e:
-                st.warning(f"Skipping row due to error: {str(e)}")
-                continue
-    except Exception as e:
-        st.error(f"Failed to fetch data: {str(e)}")
-    
+    items, seen = [], set()
+    total = detect_total_pages()  # we can still use the User-Agent trick to get page count
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
+        page = browser.new_page(
+            user_agent=HEADERS["User-Agent"], 
+            locale="en-US"
+        )
+        for pg in range(1, total + 1):
+            url = f"{BASE_URL}?page={pg}"
+            page.goto(url, timeout=30000)
+            page.wait_for_selector("table.table-striped tbody tr", timeout=15000)
+
+            rows = page.query_selector_all("table.table-striped tbody tr")
+            if not rows:
+                break
+
+            for row_handle in rows:
+                try:
+                    cells = row_handle.query_selector_all("td")
+                    link_el = cells[-1].query_selector("a[href$='.pdf']")
+                    if not link_el:
+                        continue
+                    pdf_url = link_el.get_attribute("href")
+                    pdf_url = urljoin(BASE_URL, pdf_url)
+                    if pdf_url in seen:
+                        continue
+                    seen.add(pdf_url)
+
+                    subject = cells[2].inner_text().strip()
+                    items.append({"pdf_url": pdf_url, "subject": subject})
+                except Exception:
+                    continue
+
+        browser.close()
     return items
+
 
 @st.cache_data
 def download_pdf(url):
