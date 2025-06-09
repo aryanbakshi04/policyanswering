@@ -5,7 +5,6 @@ except ImportError:
     pass
 
 import os
-import time
 import streamlit as st
 import requests
 from bs4 import BeautifulSoup
@@ -18,6 +17,7 @@ from langchain_community.vectorstores import FAISS
 from agno.agent import Agent
 from agno.models.google import Gemini
 
+ 
 BASE_URL = "https://sansad.in/ls/questions/questions-and-answers"
 PDF_CACHE_DIR = "pdf_cache_sansad"
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
@@ -30,43 +30,43 @@ def fetch_ministries():
     resp = requests.get(BASE_URL)
     resp.raise_for_status()
     soup = BeautifulSoup(resp.text, 'html.parser')
-    select = soup.find('select', {'name': 'ministry'})
+  
+    select = soup.find('select', {'id': 'edit-field-department-tid'})
     options = select.find_all('option') if select else []
     return [opt.text.strip() for opt in options if opt.get('value')]
 
 @st.cache_data(ttl=24*3600)
-def fetch_qna_records(ministry, max_pages=100, batch_size=10):
+def fetch_qna_records(ministry):
     records = []
     import urllib.parse
     page = 0
-    while page < max_pages:
-        try:
-            for offset in range(batch_size):
-                params = {'ministry': ministry, 'page': page + offset}
-                resp = requests.get(BASE_URL, params=params)
-                if resp.status_code != 200:
-                    return records
-                soup = BeautifulSoup(resp.text, 'html.parser')
-                entries = soup.select('div.qa-entry')
-                if not entries:
-                    return records
-                for r in entries:
-                    q = r.select_one('.question')
-                    s = r.select_one('.session')
-                    d = r.select_one('.date')
-                    l = r.select_one('a[href$=".pdf"]')
-                    if q and s and d:
-                        pdf_url = urllib.parse.urljoin(BASE_URL, l['href']) if l else None
-                        records.append({
-                            'question': q.get_text(strip=True),
-                            'session': s.get_text(strip=True),
-                            'date': d.get_text(strip=True),
-                            'pdf_url': pdf_url
-                        })
-            page += batch_size
-            time.sleep(1)  
-        except Exception:
+    while True:
+        params = {'field_department_tid': ministry, 'page': page}
+        resp = requests.get(BASE_URL, params=params)
+        if resp.status_code != 200:
             break
+        soup = BeautifulSoup(resp.text, 'html.parser')
+        rows = soup.select('div.view-content .views-row')
+        if not rows:
+            break
+        for row in rows:
+            
+            q = row.select_one('.views-field-field-question-content .field-content')
+           
+            s = row.select_one('.views-field-field-parallel-session-tid .field-content')
+      
+            d = row.select_one('.views-field-created .field-content')
+          
+            link = row.select_one('.views-field-field-version-file a[href$=".pdf"]')
+            pdf_url = urllib.parse.urljoin(BASE_URL, link['href']) if link else None
+            if q and s and d:
+                records.append({
+                    'question': q.get_text(strip=True),
+                    'session': s.get_text(strip=True),
+                    'date': d.get_text(strip=True),
+                    'pdf_url': pdf_url
+                })
+        page += 1
     return records
 
 @st.cache_resource
@@ -76,10 +76,8 @@ def build_vectorstore(records):
         if rec['pdf_url']:
             fname = os.path.join(PDF_CACHE_DIR, os.path.basename(rec['pdf_url']))
             if not os.path.exists(fname):
-                r = requests.get(rec['pdf_url'])
-                r.raise_for_status()
-                with open(fname, 'wb') as f:
-                    f.write(r.content)
+                r = requests.get(rec['pdf_url']); r.raise_for_status()
+                with open(fname, 'wb') as f: f.write(r.content)
             loader = PyPDFLoader(fname)
             loaded = loader.load()
             for d in loaded:
@@ -103,18 +101,16 @@ def init_agent():
         markdown=False
     )
 
-st.title("Parliamentary Ministry Q&A Assistant")
 
+st.title("Parliamentary Ministry Q&A Assistant")
 ministry_list = fetch_ministries()
 selected_ministry = st.sidebar.selectbox("Select Ministry", ministry_list)
-max_pages = st.sidebar.slider("Max pages to scan", 10, 200, 50, step=10)
-batch_size = st.sidebar.slider("Batch size for scraping", 5, 20, 10)
 
 if 'ministry' not in st.session_state or st.session_state['ministry'] != selected_ministry:
-    with st.spinner(f"Scraping Q&A for {selected_ministry}..."):
-        records = fetch_qna_records(selected_ministry, max_pages, batch_size)
+    with st.spinner(f"Indexing Q&A for {selected_ministry}..."):
+        records = fetch_qna_records(selected_ministry)
         if not records:
-            st.error("No Q&A items found. Check site structure or pagination.")
+            st.error("cannot answer this query")
             st.stop()
         vectordb = build_vectorstore(records)
         st.session_state.vectordb = vectordb
@@ -128,7 +124,7 @@ if st.button("Get Ministry Response"):
     else:
         docs = st.session_state.vectordb.similarity_search(question, k=5)
         if not docs:
-            st.write("cannot answer this query")
+            st.error("cannot answer this query")
         else:
             context = "\n\n".join(d.page_content for d in docs)
             prompt = (
@@ -137,12 +133,12 @@ if st.button("Get Ministry Response"):
             )
             response = st.session_state.agent.run(prompt)
             answer = response.content if hasattr(response, 'content') else str(response)
+
             st.subheader("Response")
             st.write(answer)
             st.subheader("Details")
             st.write(f"**Session:** {docs[0].metadata.get('session')}  ")
             st.write(f"**Date:** {docs[0].metadata.get('date')}  ")
-            st.subheader("Source PDF(s)")
+            st.subheader("Source PDFs")
             for url in {d.metadata.get('source_url') for d in docs}:
-                if url:
-                    st.markdown(f"- [PDF Link]({url})")
+                if url: st.markdown(f"- [Download PDF]({url})")
