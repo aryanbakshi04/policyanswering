@@ -7,13 +7,12 @@ except ImportError:
 import os
 import streamlit as st
 import requests
+from urllib.parse import urlencode
 
 from langchain_community.document_loaders import PyPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.embeddings import SentenceTransformerEmbeddings
 from langchain_community.vectorstores import FAISS
-import json
-from urllib.parse import urlencode
 
 from agno.agent import Agent
 from agno.models.google import Gemini
