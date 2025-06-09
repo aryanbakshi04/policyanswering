@@ -28,102 +28,44 @@ GEMINI_MODEL = "gemini-2.0-flash-exp"
 
 os.makedirs(PDF_CACHE_DIR, exist_ok=True)
 
-def detect_total_pages():
-    try:
-        resp = requests.get(BASE_URL, headers=HEADERS, timeout=10)
-        resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "html.parser")
-        
-        pager = soup.select_one("ul.pagination")
-        if not pager:
-            return 1
-            
-        last_page_link = pager.select("li.page-item a")[-1]
-        if 'href' in last_page_link.attrs:
-            last_page_url = last_page_link['href']
-            page_param = last_page_url.split('page=')[-1]
-            return int(page_param)
-        return 1
-    except Exception as e:
-        st.warning(f"Couldn't detect total pages: {str(e)}. Using default 10 pages")
-        return 10
-
 @st.cache_data(show_spinner="Fetching parliamentary questions...")
 def fetch_all_items():
-    total = detect_total_pages()
-    items, seen = [], set()
+    items = []
     session = requests.Session()
     session.headers.update(HEADERS)
     
-    for pg in range(1, total + 1):
-        try:
-            listing = f"{BASE_URL}?page={pg}"
-            r = session.get(listing, timeout=10)
-            r.raise_for_status()
-            soup = BeautifulSoup(r.text, "html.parser")
-            
-            table = soup.select_one("table.table-striped")
-            if not table:
-                st.warning(f"No table found on page {pg}. Site structure may have changed.")
-                continue
+    # Fetch just the first page to start
+    try:
+        listing = f"{BASE_URL}"
+        r = session.get(listing, timeout=10)
+        r.raise_for_status()
+        soup = BeautifulSoup(r.text, "html.parser")
+        
+        # Find all rows in the main table
+        rows = soup.select("table.table-striped tbody tr")
+        
+        for row in rows:
+            try:
+                # Get the last column which contains the PDF link
+                last_column = row.select("td")[-1]
+                pdf_tag = last_column.select_one("a[href$='.pdf']")
                 
-            rows = table.select("tbody tr")
-            if not rows:
-                st.info(f"No rows found on page {pg}. Stopping collection.")
-                break
-                
-            for row in rows:
-                try:
-                    link_cell = row.select_one("td:nth-child(1)") or row.select_one("td:first-child")
-                    if not link_cell:
-                        continue
-                    link = link_cell.find("a")
-                    if not link or 'href' not in link.attrs:
-                        continue
-                        
-                    detail_url = urljoin(BASE_URL, link["href"])
-                    dr = session.get(detail_url, timeout=10)
-                    dr.raise_for_status()
-                    ds = BeautifulSoup(dr.text, "html.parser")
+                if pdf_tag:
+                    pdf_url = urljoin(BASE_URL, pdf_tag["href"])
                     
-                    pdf_tag = ds.select_one("a[href$='.pdf']")
-                    if not pdf_tag:
-                        continue
-                        
-                    pdf_url = urljoin(detail_url, pdf_tag["href"])
-                    if pdf_url in seen:
-                        continue
-                    seen.add(pdf_url)
+                    # Get subject from the third column
+                    subject = row.select("td")[2].text.strip()
                     
-                    metadata = {
+                    items.append({
                         "pdf_url": pdf_url,
-                        "ministry": "Unknown",
-                        "session": "Unknown",
-                        "answer_date": "Unknown"
-                    }
-                    
-                    info_table = ds.select_one("table.table")
-                    if info_table:
-                        for tr in info_table.select("tr"):
-                            th = tr.select_one("th")
-                            td = tr.select_one("td")
-                            if th and td:
-                                key = th.text.strip().lower()
-                                value = td.text.strip()
-                                if "ministry" in key:
-                                    metadata["ministry"] = value
-                                elif "session" in key:
-                                    metadata["session"] = value
-                                elif "answer date" in key:
-                                    metadata["answer_date"] = value
-                    
-                    items.append(metadata)
-                    time.sleep(0.5)
-                except Exception as e:
-                    st.warning(f"Skipping row due to error: {str(e)}")
-        except Exception as e:
-            st.warning(f"Skipping page {pg} due to error: {str(e)}")
-            
+                        "subject": subject
+                    })
+            except Exception as e:
+                st.warning(f"Skipping row due to error: {str(e)}")
+                continue
+    except Exception as e:
+        st.error(f"Failed to fetch data: {str(e)}")
+    
     return items
 
 @st.cache_data
@@ -159,7 +101,9 @@ def build_vectordb(items):
             pdf_path = download_pdf(it["pdf_url"])
             doc_chunks = safe_pdf_loader(pdf_path)
             for doc in doc_chunks:
-                doc.metadata.update(it)
+                # Add subject to metadata
+                doc.metadata["subject"] = it["subject"]
+                doc.metadata["pdf_url"] = it["pdf_url"]
                 docs.append(doc)
         except Exception as e:
             st.warning(f"Skipping PDF {it['pdf_url']}: {str(e)}")
@@ -179,11 +123,11 @@ def build_vectordb(items):
 def init_agent():
     return Agent(
         model=Gemini(id=GEMINI_MODEL),
-        description="Answer Lok Sabha questions as the selected ministry.",
+        description="Answer parliamentary questions based on official documents.",
         instructions=[
             "Use PDF context to ground answers.",
-            "Be formal, solution-oriented, positive, and focus on public welfare.",
-            "Include session, date, and source PDF link in your response"
+            "Be formal, solution-oriented, and focus on public welfare.",
+            "Include the subject and source PDF link in your response"
         ],
         show_tool_calls=False,
         markdown=False
@@ -205,8 +149,9 @@ with st.spinner("Initializing system..."):
 
     agent = init_agent()
 
-ministries = sorted({i["ministry"] for i in items if i["ministry"] != "Unknown"})
-selected = st.selectbox("Select Ministry", ["All"] + ministries, index=0)
+# Create a list of subjects for filtering
+subjects = sorted({i["subject"] for i in items})
+selected_subject = st.selectbox("Filter by Subject", ["All"] + subjects, index=0)
 
 question = st.text_area("Enter your parliamentary question:", height=150)
 if st.button("Generate Answer", type="primary"):
@@ -217,16 +162,20 @@ if st.button("Generate Answer", type="primary"):
     with st.spinner("Searching knowledge base..."):
         try:
             docs = vectordb.similarity_search(question, k=10)
-            if selected != "All":
-                docs = [d for d in docs if d.metadata["ministry"] == selected]
-            docs = docs[:4]
+            
+            # Filter by subject if selected
+            if selected_subject != "All":
+                docs = [d for d in docs if d.metadata["subject"] == selected_subject]
             
             if not docs:
                 st.error("No relevant documents found for this question")
                 st.stop()
                 
+            # Limit to top 4 documents
+            docs = docs[:4]
+            
             context = "\n\n".join(
-                f"[{d.metadata.get('session', 'Unknown')} | {d.metadata.get('answer_date', 'Unknown')}] {d.page_content.strip()}"
+                f"[Subject: {d.metadata['subject']}]\n{d.page_content.strip()}"
                 for d in docs
             )
         except Exception as e:
@@ -238,20 +187,18 @@ if st.button("Generate Answer", type="primary"):
             prompt = (
                 f"Context:\n{context}\n\n"
                 f"Question: {question}\n"
-                f"Answer as the Ministry of {selected}:"
+                f"Provide a formal, solution-oriented response based on the context above."
             )
             response = agent.run(prompt)
             answer = getattr(response, "content", str(response))
             
-            st.subheader("Ministry's Response")
+            st.subheader("Response")
             st.write(answer)
             
             st.subheader("Reference Sources")
             for d in docs:
                 md = d.metadata
-                st.markdown(f"**{md.get('ministry', 'Unknown Ministry')}**")
-                st.markdown(f"- Session: {md.get('session', 'Unknown')}")
-                st.markdown(f"- Date Answered: {md.get('answer_date', 'Unknown')}")
+                st.markdown(f"**{md['subject']}**")
                 st.markdown(f"- [Source PDF]({md['pdf_url']})")
                 st.divider()
                 
