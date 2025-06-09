@@ -1,0 +1,12 @@
+streamlit
+requests
+beautifulsoup4
+langchain
+langchain-community
+unstructured
+faiss-cpu
+sentence-transformers
+agno
+google-auth
+google-auth-oauthlib
+python-dotenv
