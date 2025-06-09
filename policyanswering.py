@@ -17,7 +17,7 @@ from langchain_community.vectorstores import FAISS
 from agno.agent import Agent
 from agno.models.google import Gemini
 
-# Configuration
+# --- Configuration ---
 BASE_URL = "https://sansad.in/ls/questions/questions-and-answers"
 PDF_CACHE_DIR = "pdf_cache_sansad"
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
@@ -25,58 +25,40 @@ GEMINI_MODEL_NAME = "gemini-2.0-flash-exp"
 
 os.makedirs(PDF_CACHE_DIR, exist_ok=True)
 
+# --- Fetch all Q&A records across ministries ---
 @st.cache_data(ttl=24*3600)
-def fetch_ministries():
-    resp = requests.get(BASE_URL)
-    resp.raise_for_status()
-    soup = BeautifulSoup(resp.text, 'html.parser')
-    select = soup.find('select', {'id': 'edit-field-department-tid'})
-    options = select.find_all('option') if select else []
-    mapping = {}
-    for opt in options:
-        val = opt.get('value')
-        text = opt.get_text(strip=True)
-        if val and text and val != 'All':
-            mapping[text] = val
-    return mapping
-
-
-@st.cache_data(ttl=24*3600)
-def fetch_qna_records(ministry):
-    records = []
+def fetch_all_records(max_pages=50):
     import urllib.parse
-    page = 0
-    while True:
-        params = {'field_department_tid': ministry, 'page': page}
+    records = []
+    for page in range(max_pages):
+        params = {'page': page}
         resp = requests.get(BASE_URL, params=params)
         if resp.status_code != 200:
             break
         soup = BeautifulSoup(resp.text, 'html.parser')
-        rows = soup.select('div.views-row')
+        rows = soup.select('table.views-table tbody tr')
         if not rows:
             break
         for row in rows:
-            q_elem = row.select_one('.views-field-field-question-content .field-content') or row.select_one('.views-field-field-question .field-content')
-            s_elem = row.select_one('.views-field-field-parallel-session-tid .field-content') or row.select_one('.views-field-field-parliament-session .field-content')
-            d_elem = row.select_one('.views-field-created .field-content')
-            link = row.find('a', href=lambda h: h and h.lower().endswith('.pdf'))
-            if not (q_elem and s_elem and d_elem):
-                contents = [fc.get_text(strip=True) for fc in row.select('.field-content')]
-                if len(contents) >= 3:
-                    q_text = contents[0]
-                    s_text = contents[-2]
-                    d_text = contents[-1]
-                else:
-                    continue
-            else:
-                q_text = q_elem.get_text(strip=True)
-                s_text = s_elem.get_text(strip=True)
-                d_text = d_elem.get_text(strip=True)
-            pdf_url = urllib.parse.urljoin(BASE_URL, link['href']) if link else None
-            records.append({'question': q_text,'session': s_text,'date': d_text,'pdf_url': pdf_url})
-        page += 1
+            cells = row.find_all('td')
+            if len(cells) < 8:
+                continue
+            question = cells[1].get_text(strip=True)
+            session = cells[3].get_text(strip=True)
+            date = cells[4].get_text(strip=True)
+            ministry = cells[5].get_text(strip=True)
+            link_tag = cells[7].find('a', href=True)
+            pdf_url = urllib.parse.urljoin(BASE_URL, link_tag['href']) if link_tag else None
+            records.append({
+                'question': question,
+                'session': session,
+                'date': date,
+                'ministry': ministry,
+                'pdf_url': pdf_url
+            })
     return records
 
+# --- Build FAISS vector store from filtered records ---
 @st.cache_resource
 def build_vectorstore(records):
     docs = []
@@ -89,13 +71,19 @@ def build_vectorstore(records):
             loader = PyPDFLoader(fname)
             loaded = loader.load()
             for d in loaded:
-                d.metadata.update({'session': rec['session'], 'date': rec['date'], 'source_url': rec['pdf_url']})
+                d.metadata.update({
+                    'session': rec['session'],
+                    'date': rec['date'],
+                    'ministry': rec['ministry'],
+                    'source_url': rec['pdf_url']
+                })
             docs.extend(loaded)
     splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
     chunks = splitter.split_documents(docs)
     embeddings = SentenceTransformerEmbeddings(model_name=EMBEDDING_MODEL)
     return FAISS.from_documents(chunks, embeddings)
 
+# --- Initialize Gemini Agent ---
 @st.cache_resource
 def init_agent():
     return Agent(
@@ -103,53 +91,60 @@ def init_agent():
         description="Answers parliamentary ministry questions based on retrieved context.",
         instructions=[
             "Use context from ministry Q&A PDFs.",
-            "Provide formal, solution-oriented responses focused on public welfare."
+            "Provide formal, solution-oriented responses."
         ],
         show_tool_calls=False,
         markdown=False
     )
 
-# App UI
+# --- Streamlit App UI ---
 st.title("Parliamentary Ministry Q&A Assistant")
-ministry_list = fetch_ministries()
-selected_ministry = st.sidebar.selectbox("Select Ministry", ministry_list)
 
-if 'ministry' not in st.session_state or st.session_state['ministry'] != selected_ministry:
-    with st.spinner(f"Indexing Q&A for {selected_ministry}..."):
-        records = fetch_qna_records(selected_ministry)
-        if not records:
-            st.error("cannot answer this query")
-            st.stop()
-        vectordb = build_vectorstore(records)
-        st.session_state.vectordb = vectordb
-        st.session_state.agent = init_agent()
-        st.session_state.ministry = selected_ministry
+# Load and cache all records once
+all_records = fetch_all_records()
+if not all_records:
+    st.error("Unable to fetch Q&A records. Check site or network.")
+    st.stop()
 
+# Dropdown of ministries
+ministries = sorted({rec['ministry'] for rec in all_records if rec['ministry']})
+selected_ministry = st.sidebar.selectbox("Select Ministry", ministries)
+
+# Filter records by ministry
+filtered = [r for r in all_records if r['ministry'] == selected_ministry]
+if not filtered:
+    st.error("No records found for selected ministry.")
+    st.stop()
+
+# Build vector store for this ministry
+vectordb = build_vectorstore(filtered)
+agent = init_agent()
+
+# User question input
 question = st.text_area("Your Parliamentary Question:")
 if st.button("Get Ministry Response"):
-    if not question:
+    if not question.strip():
         st.error("cannot answer this query")
     else:
-        docs = st.session_state.vectordb.similarity_search(question, k=5)
+        docs = vectordb.similarity_search(question, k=5)
         if not docs:
             st.error("cannot answer this query")
         else:
             context = "\n\n".join(d.page_content for d in docs)
             prompt = (
                 f"Context:\n{context}\n\n"
-                f"Provide answer as {selected_ministry} ministry. Include session and date. Question: {question}"
+                f"Provide an answer on behalf of {selected_ministry} ministry, including session and date. Question: {question}"
             )
-            response = st.session_state.agent.run(prompt)
+            response = agent.run(prompt)
             answer = response.content if hasattr(response, 'content') else str(response)
 
+            # Display
             st.subheader("📝 Answer")
             st.write(answer)
             st.subheader("📋 Details")
             st.write(f"**Session:** {docs[0].metadata.get('session')}  ")
             st.write(f"**Date:** {docs[0].metadata.get('date')}  ")
-            st.subheader("📄 Source PDFs")
+            st.subheader("📄 Source PDF(s)")
             for url in {d.metadata.get('source_url') for d in docs}:
-                if url: st.markdown(f"- [Download PDF]({url})")
-
-st.markdown("---")
-st.markdown("**How it works:** We scrape ministry Q&A entries across pages, index PDFs with FAISS, retrieve context (RAG), and generate answers with Gemini.")
+                if url: st.markdown(f"- [PDF Link]({url})")
+ 
