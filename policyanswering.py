@@ -70,7 +70,7 @@ def fetch_all_questions(loksabha_no=18, session_no=4, max_pages=625, page_size=1
                 "loksabha": q.get("loksabhaNo"),
                 "session": q.get("sessionNumber"),
                 "member": q.get("questionByMemberNames"),
-                "ministry": q.get("ministry"),
+                "ministry": q.get("ministry") or q.get("ministryName"),
                 "type": q.get("questionType"),
                 "pdf_url": pdf_url,
                 "question_text": q.get("questionTitle"),
