@@ -118,7 +118,6 @@ def fetch_all_questions(lokNo=18, sessionNo=4, max_pages=625, page_size=10, loca
                     all_questions.append(processed_q)
 
             except Exception as e:
-                st.error(f"Error fetching data: {str(e)}")
                 break
 
     return all_questions
