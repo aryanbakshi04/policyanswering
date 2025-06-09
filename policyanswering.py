@@ -26,14 +26,14 @@ GEMINI_MODEL_NAME = "gemini-2.0-flash-exp"
 os.makedirs(PDF_CACHE_DIR, exist_ok=True)
 
 @st.cache_data
-def fetch_all_items(max_pages=9):
+def fetch_all_items(max_pages=5):
     items = []
     for page in range(1, max_pages + 1):
         resp = requests.get(f"{BASE_LIST_URL}?page={page}")
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
-        for card in soup.select("div.card-body"):
-            link_tag = card.select_one("a[href*='/ls/question/']")
+        for row in soup.select("table.table-striped tbody tr"):
+            link_tag = row.select_one("td:nth-of-type(5) a")
             if not link_tag:
                 continue
             detail_url = urljoin(BASE_LIST_URL, link_tag["href"])
@@ -117,46 +117,49 @@ if "vectordb" not in st.session_state:
         if vectordb is None:
             st.error("No documents indexed. Check site structure or pagination.")
             st.stop()
-        st.session_state.vectordb = vectordb
+        ministries = sorted({it["ministry"] for it in items})
         st.session_state.items = items
+        st.session_state.ministries = ministries
+        st.session_state.vectordb = vectordb
         st.session_state.agent = init_agent()
 
 question = st.text_area("Enter your parliamentary question text")
-ministry = st.text_input("Enter the Ministry name (e.g. Ministry of Law and Justice)")
+selected_ministry = st.sidebar.selectbox(
+    "Filter by Ministry", ["All"] + st.session_state.ministries
+)
 
 if st.button("Get Answer"):
-    if not question or not ministry:
-        st.error("Both question and ministry name are required.")
+    if not question.strip():
+        st.error("Please enter a question.")
     else:
-        docs = st.session_state.vectordb.similarity_search(question, k=4)
-        if not docs:
-            st.error("No relevant context found in the indexed PDFs.")
+        docs = st.session_state.vectordb.similarity_search(question, k=10)
+        if selected_ministry != "All":
+            filtered = [d for d in docs if d.metadata.get("ministry") == selected_ministry]
+            docs = filtered or docs[:4]
         else:
-            context_parts = []
-            for d in docs:
-                md = d.metadata
-                snippet = d.page_content.strip().replace("\n", " ")
-                context_parts.append(
-                    f"[{md['session']} | {md['answer_date']} | {md['ministry']}] {snippet}"
-                )
-            context = "\n\n".join(context_parts)
-            prompt = (
-                f"Context (from Lok Sabha Q&A archives):\n{context}\n\n"
-                f"Answer as the {ministry}: Provide a formal, "
-                f"solution-oriented response. Also include at the end: "
-                f"Lok Sabha session, answer date, and source PDF link."
-                f"\nQuestion: {question}"
+            docs = docs[:4]
+        if not docs:
+            st.error("No relevant context found for this ministry.")
+        else:
+            context = "\n\n".join(
+                f"[{d.metadata['session']} | {d.metadata['answer_date']}] {d.page_content.strip()}"
+                for d in docs
             )
-            with st.spinner("Fetching Response from the Ministry"):
+            prompt = (
+                f"Context:\n{context}\n\n"
+                f"Answer as the {selected_ministry} ministry: Provide a formal, solution-oriented response. "
+                f"Include Lok Sabha session, answer date, and source PDF link.\nQuestion: {question}"
+            )
+            with st.spinner("Generating answer..."):
                 response = st.session_state.agent.run(prompt)
             answer = response.content if hasattr(response, "content") else str(response)
-            st.subheader("Response from the Ministry")
+            st.subheader("Answer")
             st.write(answer)
-            st.subheader("Sources:")
+            st.subheader("Sources")
             for d in docs:
                 md = d.metadata
                 st.markdown(
-                    f"- **Session:** {md['session']} &nbsp; |  **Date:** {md['answer_date']}  \n"
-                    f"  **Ministry:** {md['ministry']}  \n"
-                    f"  [View PDF]({md['source_pdf']})"
+                    f"- Session: {md['session']}  \n"
+                    f"  Date: {md['answer_date']}  \n"
+                    f"  [PDF Source]({md['source_pdf']})"
                 )
