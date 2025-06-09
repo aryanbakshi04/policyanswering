@@ -25,7 +25,7 @@ API_URL = "https://sansad.in/api_ls/question/qetFilteredQuestionsAns"
 os.makedirs(PDF_CACHE_DIR, exist_ok=True)
 
 @st.cache_data(ttl=24*3600)
-def fetch_all_questions(loksabha_no=18, session_no=4, max_pages=625, page_size=10, locale="en"):
+def fetch_all_questions(loksabha_no=18, session_no=4, max_pages=3, page_size=10, locale="en"):
     all_questions = []
     for page in range(1, max_pages + 1):     # <-- start from 1, not 0
         params = {
