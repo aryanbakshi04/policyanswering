@@ -169,7 +169,7 @@ if st.button("Get Ministry Response"):
                 answer = response.content if hasattr(response, 'content') else str(response)
             except Exception as e:
                 st.error(f"Error generating answer: {e}")
-                return
+                st.stop()
 
             # Display
             st.subheader("📝 Answer")
