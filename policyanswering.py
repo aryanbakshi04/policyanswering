@@ -43,37 +43,52 @@ def fetch_all_questions(lokNo=18, sessionNo=4, max_pages=625, page_size=10, loca
             st.warning(f"Error fetching page {page}: {e}")
             break
 
+        # --- Correct parsing for your API response ---
         questions = []
         if isinstance(data, list):
+            # Your API returns a list of dicts, each with 'listOfQuestions'
             for item in data:
                 if isinstance(item, dict) and "listOfQuestions" in item:
-                    questions.extend(item["listOfQuestions"])
+                    item_questions = item["listOfQuestions"]
+                    # Ensure it's a list and not None
+                    if isinstance(item_questions, list):
+                        questions.extend(item_questions)
         elif isinstance(data, dict):
+            # Fallback for unexpected dict responses
             data_obj = data.get("data", {})
             if isinstance(data_obj, dict) and "listOfQuestions" in data_obj:
-                questions = data_obj["listOfQuestions"]
+                item_questions = data_obj["listOfQuestions"]
+                if isinstance(item_questions, list):
+                    questions = item_questions
 
         if not questions:
+            # Stop if no questions found on this page, assuming no more data
             break
 
-        # ---------- FIXED INDENTATION HERE -----------
+        # Debug: Print the first 3 questions on the first page to inspect structure
+        if page == 1:
+            st.write("First 3 questions (parsed):", questions[:3])
+
         for q in questions:
+            if not isinstance(q, dict):
+                continue  # Skip None or invalid question blocks
             ministry = q.get("ministry")
             if not ministry:
-                continue  # skip if no ministry
+                continue  # Skip if no ministry field
             all_questions.append({
                 "question_no": q.get("quesNo"),
                 "subject": q.get("subjects"),
                 "loksabha": q.get("lokNo"),
                 "session": q.get("sessionNo"),
-                "member": ", ".join(q.get("member", [])) if q.get("member") else None,
+                "member": ", ".join(q.get("member", [])) if isinstance(q.get("member"), list) else q.get("member"),
                 "ministry": ministry,
                 "type": q.get("type"),
                 "pdf_url": q.get("questionsFilePath"),
                 "question_text": q.get("questionText"),
                 "date": q.get("date"),
             })
-        # ---------------------------------------------
+    # Debug: Show all ministries found
+    st.write("Sample ministries:", list({q['ministry'] for q in all_questions if q.get('ministry')})[:10])
     return all_questions
 # -------------------------------------------------------------------------------------
 all_records = fetch_all_questions()
