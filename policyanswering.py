@@ -26,9 +26,9 @@ os.makedirs(PDF_CACHE_DIR, exist_ok=True)
 
 # --- Fetch all Q&A records via the API ---
 @st.cache_data(ttl=24*3600)
-def fetch_all_questions(loksabha_no=18, session_no=4, max_pages=20, page_size=10, locale="en"):
+def fetch_all_questions(loksabha_no=18, session_no=4, max_pages=625, page_size=10, locale="en"):
     all_questions = []
-    for page in range(max_pages):
+    for page in range(1, max_pages + 1):     # <-- start from 1, not 0
         params = {
             "loksabhaNo": loksabha_no,
             "sessionNumber": session_no,
@@ -65,7 +65,7 @@ def fetch_all_questions(loksabha_no=18, session_no=4, max_pages=20, page_size=10
                 "date": q.get("answerDate"),
             })
     return all_questions
-
+    
 # --- Build FAISS vector store from filtered records ---
 @st.cache_resource
 def build_vectorstore(records):
