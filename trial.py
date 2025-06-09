@@ -24,44 +24,14 @@ EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 GEMINI_MODEL_NAME = "gemini-2.0-flash-exp"
 API_URL = "https://sansad.in/api_ls/question/qetFilteredQuestionsAns"
 
-# Set up page configuration
-st.set_page_config(
-    page_title="Parliamentary Ministry Q&A Assistant",
-    page_icon="🏛️",
-    layout="wide"
-)
-
-# Add CSS for better styling
-st.markdown("""
-<style>
-    .main {
-        padding: 2rem;
-    }
-    .stButton>button {
-        width: 100%;
-        margin-top: 1rem;
-    }
-    .stSubheader {
-        margin-top: 2rem;
-    }
-</style>
-""", unsafe_allow_html=True)
-
-# Initialize session state
-if 'previous_questions' not in st.session_state:
-    st.session_state.previous_questions = []
-
 os.makedirs(PDF_CACHE_DIR, exist_ok=True)
 
 def is_valid_question(question: str) -> bool:
-    """Validate if the question is appropriate for ministry response."""
     words = [w.lower() for w in question.split() if len(w) > 3]
     if len(words) < 3:
         return False
-        
     ministry_keywords = ['policy', 'scheme', 'program', 'initiative', 'ministry', 
                         'government', 'public', 'welfare', 'development', 'plan']
-    
     return any(keyword in words for keyword in ministry_keywords)
 
 def construct_prompt(question, context, ministry):
@@ -87,7 +57,6 @@ Response Format:
 @st.cache_data(ttl=24*3600)
 def fetch_all_questions(lokNo=18, sessionNo=4, max_pages=625, page_size=10, locale="en"):
     all_questions = []
-    
     headers = {
         'Accept': 'application/json',
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
@@ -104,14 +73,8 @@ def fetch_all_questions(lokNo=18, sessionNo=4, max_pages=625, page_size=10, loca
             }
 
             try:
-                resp = requests.get(
-                    API_URL, 
-                    params=params,
-                    headers=headers,
-                    timeout=30
-                )
+                resp = requests.get(API_URL, params=params, headers=headers, timeout=30)
                 resp.raise_for_status()
-
                 data = resp.json()
                 
                 if not data:
@@ -155,7 +118,7 @@ def fetch_all_questions(lokNo=18, sessionNo=4, max_pages=625, page_size=10, loca
                     all_questions.append(processed_q)
 
             except Exception as e:
-                st.error(f"Error on page {page}: {str(e)}")
+                st.error(f"Error fetching data: {str(e)}")
                 break
 
     return all_questions
@@ -174,8 +137,7 @@ def build_vectorstore(records):
                         r.raise_for_status()
                         with open(fname, 'wb') as f:
                             f.write(r.content)
-                    except Exception as e:
-                        st.warning(f"Failed to download PDF: {rec['pdf_url']}\nError: {e}")
+                    except Exception:
                         continue
                         
                 try:
@@ -189,8 +151,7 @@ def build_vectorstore(records):
                             'source_url': rec['pdf_url']
                         })
                     docs.extend(loaded)
-                except Exception as e:
-                    st.warning(f"Failed to load PDF {fname}: {e}")
+                except Exception:
                     continue
                     
         if not docs:
@@ -211,7 +172,7 @@ def init_agent():
             "Focus solely on public interest and welfare when answering questions.",
             "Provide solution-oriented responses with a positive tone.",
             "Only answer questions relevant to ministry affairs and public policy.",
-            "Return 'Cannot answer this query. Please ask a question related to ministry affairs and public policy.' for irrelevant or inappropriate questions.",
+            "Return 'Cannot answer this query. Please ask a question related to ministry affairs and public policy.' for irrelevant questions.",
             "Include specific details from source documents to support answers.",
             "Maintain formal, parliamentary language throughout responses.",
             "Structure responses to clearly address the question's main points.",
@@ -223,16 +184,23 @@ def init_agent():
 
 # --- Main Streamlit App ---
 def main():
+    st.set_page_config(
+        page_title="Parliamentary Ministry Q&A Assistant",
+        page_icon="🏛️",
+        layout="wide"
+    )
+
     st.title("🏛️ Parliamentary Ministry Q&A Assistant")
+
+    if 'previous_questions' not in st.session_state:
+        st.session_state.previous_questions = []
 
     # Load and cache all records once
     all_records = fetch_all_questions()
-    
-    # Get unique ministries
     ministries = sorted({rec['ministry'] for rec in all_records if rec['ministry']})
     
     if not ministries:
-        st.error("No ministries found in fetched records. Please try again later.")
+        st.error("No ministries found. Please try again later.")
         st.stop()
 
     # Sidebar for ministry selection
@@ -243,10 +211,6 @@ def main():
             ministries,
             help="Select the ministry you want to query"
         )
-        
-        st.markdown("---")
-        st.markdown(f"### About {selected_ministry}")
-        st.markdown("This assistant provides official responses based on parliamentary records and ministry documents.")
 
     # Main content area
     col1, col2 = st.columns([2, 1])
@@ -264,11 +228,9 @@ def main():
             elif not is_valid_question(question):
                 st.error("Please ask a question related to ministry affairs and public policy.")
             else:
-                # Add to previous questions
                 if question not in st.session_state.previous_questions:
                     st.session_state.previous_questions.append(question)
 
-                # Filter records and build vector store
                 filtered = [r for r in all_records if r['ministry'] == selected_ministry]
                 if not filtered:
                     st.error("No records found for selected ministry.")
@@ -279,30 +241,24 @@ def main():
                     st.error("No searchable documents available for this ministry.")
                     st.stop()
 
-                # Initialize agent
                 agent = init_agent()
 
                 with st.spinner("Analyzing parliamentary records..."):
                     try:
-                        # Get relevant documents
                         docs = vectordb.similarity_search(question, k=5)
                         if not docs:
                             st.error("No relevant information found to answer this query.")
                         else:
-                            # Prepare context and generate response
                             context = "\n\n".join(d.page_content for d in docs)
                             prompt = construct_prompt(question, context, selected_ministry)
                             
                             response = agent.run(prompt)
                             answer = response.content if hasattr(response, 'content') else str(response)
                             
-                            # Display formatted response
                             st.subheader("🏛️ Official Ministry Response")
                             st.markdown(answer)
                             
-                            # Display metadata in an organized way
                             with st.expander("📋 Source Details", expanded=True):
-                                # Group sources by session
                                 sessions = {}
                                 for doc in docs:
                                     session = doc.metadata.get('session', 'N/A')
@@ -314,7 +270,6 @@ def main():
                                     sessions[session]['dates'].add(doc.metadata.get('date', 'N/A'))
                                     sessions[session]['urls'].add(doc.metadata.get('source_url', ''))
                                 
-                                # Display grouped information
                                 for session, details in sessions.items():
                                     st.markdown(f"**Parliament Session:** {session}")
                                     st.markdown(f"**Dates Referenced:** {', '.join(sorted(details['dates']))}")
@@ -324,7 +279,7 @@ def main():
                                             st.markdown(f"- [📄 View Parliamentary Record]({url})")
                     
                     except Exception as e:
-                        st.error(f"Error generating response: {str(e)}")
+                        st.error("Error generating response. Please try again.")
                         st.stop()
 
     with col2:
