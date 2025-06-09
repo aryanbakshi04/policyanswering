@@ -26,7 +26,7 @@ GEMINI_MODEL_NAME = "gemini-2.0-flash-exp"
 os.makedirs(PDF_CACHE_DIR, exist_ok=True)
 
 @st.cache_data
-def fetch_all_items(max_pages=5):
+def fetch_all_items(max_pages=9):
     items = []
     for page in range(1, max_pages + 1):
         resp = requests.get(f"{BASE_LIST_URL}?page={page}")
