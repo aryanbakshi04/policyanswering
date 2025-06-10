@@ -214,7 +214,7 @@ def create_faiss_index(records):
 
 def load_faiss_index():
     embeddings = SentenceTransformerEmbeddings(model_name=EMBEDDING_MODEL)
-    return FAISS.load_local(FAISS_INDEX_PATH, embeddings)
+    return FAISS.load_local(FAISS_INDEX_PATH, embeddings,allow_dangerous_deserialization=True)
 
 def init_agent():
     return Agent(
