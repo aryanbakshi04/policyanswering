@@ -241,32 +241,31 @@ def main():
         layout="wide"
     )
     
-    # current_time = "2025-06-10 13:38:34" 
-    # st.markdown("**System Information**")
-    # st.markdown(f"- **Current Date and Time (UTC - YYYY-MM-DD HH:MM:SS formatted):** {current_time}")
-    # st.markdown(f"- **Current User's Login:** aryanbakshi04")
-    # st.markdown(f"- **Data Storage:** FAISS")
-
     st.title("Parliamentary Ministry Q&A Assistant")
 
+    
     if 'previous_questions' not in st.session_state:
         st.session_state.previous_questions = []
 
     if 'data_loading' not in st.session_state:
         st.session_state.data_loading = False
 
-    if not st.session_state.data_loading:
-        st.session_state.data_loading = True
-        all_records = fetch_all_questions()
-        with st.spinner("Creating FAISS index..."):
-            db = create_faiss_index(all_records)
-        st.session_state.data_loading = False
-    else:
-        try:
-            db = load_faiss_index()
-        except Exception as e:
-            st.error("Error loading index. Please refresh the page.")
-            st.stop()
+    if 'db' not in st.session_state:
+        st.session_state.db = None
+
+    
+    try:
+        if not st.session_state.db:
+            if os.path.exists(os.path.join(FAISS_INDEX_PATH, "index.faiss")):
+                with st.spinner("Loading existing index..."):
+                    st.session_state.db = load_faiss_index()
+            else:
+                with st.spinner("Creating new index..."):
+                    all_records = fetch_all_questions()
+                    st.session_state.db = create_faiss_index(all_records)
+    except Exception as e:
+        st.error(f"Error initializing database: {str(e)}")
+        st.session_state.db = None
 
     
     ministries = sorted(ALL_MINISTRIES)
@@ -281,19 +280,22 @@ def main():
         
         if st.button("Refresh Data"):
             with st.spinner("Fetching latest data..."):
-                start_time = time.time()
-                new_records = fetch_all_questions()
-                
-                st.info(f"""
-                Data Statistics:
-                - Total Questions: {len(new_records)}
-                - Unique Ministries: {len(set(r['ministry'] for r in new_records))}
-                - Time Taken: {time.time() - start_time:.2f} seconds
-                """)
-                
-                db = create_faiss_index(new_records)
-                st.success("Data refreshed successfully!")
-                st.experimental_rerun()
+                try:
+                    start_time = time.time()
+                    new_records = fetch_all_questions()
+                    
+                    st.info(f"""
+                    Data Statistics:
+                    - Total Questions: {len(new_records)}
+                    - Unique Ministries: {len(set(r['ministry'] for r in new_records))}
+                    - Time Taken: {time.time() - start_time:.2f} seconds
+                    """)
+                    
+                    st.session_state.db = create_faiss_index(new_records)
+                    st.success("Data refreshed successfully!")
+                    st.experimental_rerun()
+                except Exception as e:
+                    st.error(f"Error refreshing data: {str(e)}")
 
     col1, col2 = st.columns([2, 1])
 
@@ -305,6 +307,10 @@ def main():
         )
 
         if st.button("Get Ministry Response", use_container_width=True):
+            if not st.session_state.db:
+                st.error("Database not initialized. Please refresh the page.")
+                return
+
             if not is_valid_question(question):
                 st.error("Please provide a complete question.")
                 return
@@ -313,7 +319,7 @@ def main():
                 st.session_state.previous_questions.append(question)
             
             try:
-                results = db.similarity_search_with_score(
+                results = st.session_state.db.similarity_search_with_score(
                     question,
                     k=5,
                     filter={'ministry': selected_ministry}
@@ -342,7 +348,7 @@ def main():
                                 st.markdown(f"[View Parliamentary Record]({doc.metadata['pdf_url']})")
             
             except Exception as e:
-                st.error("Error generating response. Please try again.")
+                st.error(f"Error generating response: {str(e)}")
 
     with col2:
         if st.session_state.previous_questions:
