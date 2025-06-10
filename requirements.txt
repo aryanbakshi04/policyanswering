@@ -1,5 +1,5 @@
 streamlit
-chromadb
+chromadb==0.4.24
 sentence-transformers
 python-dotenv
 pysqlite3-binary
@@ -9,3 +9,4 @@ faiss-cpu
 pypdf
 agno
 requests
+protobuf==3.20.3
