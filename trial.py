@@ -16,12 +16,69 @@ from langchain_community.vectorstores import FAISS
 from agno.agent import Agent
 from agno.models.google import Gemini
 
-# Constants
+
 PDF_CACHE_DIR = "pdf_cache_sansad"
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 GEMINI_MODEL_NAME = "gemini-2.0-flash-exp"
 API_URL = "https://sansad.in/api_ls/question/qetFilteredQuestionsAns"
 FAISS_INDEX_PATH = "./faiss_index"
+
+
+ALL_MINISTRIES = [
+    "Ministry of Agriculture and Farmers Welfare",
+    "Ministry of Chemicals and Fertilizers",
+    "Ministry of Civil Aviation",
+    "Ministry of Coal",
+    "Ministry of Commerce and Industry",
+    "Ministry of Communications",
+    "Ministry of Consumer Affairs, Food and Public Distribution",
+    "Ministry of Corporate Affairs",
+    "Ministry of Culture",
+    "Ministry of Defence",
+    "Ministry of Development of North Eastern Region",
+    "Ministry of Earth Sciences",
+    "Ministry of Education",
+    "Ministry of Electronics and Information Technology",
+    "Ministry of Environment, Forest and Climate Change",
+    "Ministry of External Affairs",
+    "Ministry of Finance",
+    "Ministry of Fisheries, Animal Husbandry and Dairying",
+    "Ministry of Food Processing Industries",
+    "Ministry of Health and Family Welfare",
+    "Ministry of Heavy Industries",
+    "Ministry of Home Affairs",
+    "Ministry of Housing and Urban Affairs",
+    "Ministry of Information and Broadcasting",
+    "Ministry of Jal Shakti",
+    "Ministry of Labour and Employment",
+    "Ministry of Law and Justice",
+    "Ministry of Micro, Small and Medium Enterprises",
+    "Ministry of Mines",
+    "Ministry of Minority Affairs",
+    "Ministry of New and Renewable Energy",
+    "Ministry of Panchayati Raj",
+    "Ministry of Parliamentary Affairs",
+    "Ministry of Personnel, Public Grievances and Pensions",
+    "Ministry of Petroleum and Natural Gas",
+    "Ministry of Power",
+    "Ministry of Railways",
+    "Ministry of Road Transport and Highways",
+    "Ministry of Rural Development",
+    "Ministry of Science and Technology",
+    "Ministry of Ports, Shipping and Waterways",
+    "Ministry of Skill Development and Entrepreneurship",
+    "Ministry of Social Justice and Empowerment",
+    "Ministry of Statistics and Programme Implementation",
+    "Ministry of Steel",
+    "Ministry of Textiles",
+    "Ministry of Tourism",
+    "Ministry of Tribal Affairs",
+    "Ministry of Women and Child Development",
+    "Ministry of Youth Affairs and Sports",
+    "Prime Minister's Office",
+    "NITI Aayog"
+]
+
 
 os.makedirs(PDF_CACHE_DIR, exist_ok=True)
 os.makedirs(FAISS_INDEX_PATH, exist_ok=True)
@@ -51,22 +108,15 @@ Response Format:
 3. Future Plans/Recommendations (if applicable)
 """
 
-def fetch_all_questions(lokNo=18, sessionNo=4, max_pages=3, page_size=10, locale="en"):
+def fetch_all_questions(lokNo=18, sessionNo=4, max_pages=625, page_size=10, locale="en"):
     all_questions = []
     headers = {
         'Accept': 'application/json',
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
     }
 
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-
     with st.spinner("Fetching parliamentary records..."):
         for page in range(1, max_pages + 1):
-            progress = page / max_pages
-            progress_bar.progress(progress)
-            status_text.text(f"Fetching page {page} of {max_pages}...")
-
             params = {
                 "loksabhaNo": lokNo,
                 "sessionNumber": sessionNo,
@@ -86,14 +136,12 @@ def fetch_all_questions(lokNo=18, sessionNo=4, max_pages=3, page_size=10, locale
                     except requests.exceptions.RequestException:
                         retry_count += 1
                         if retry_count == max_retries:
-                            st.warning(f"Skipping page {page} due to connection error")
                             continue
                         time.sleep(1)
 
                 data = resp.json()
                 
                 if not data:
-                    status_text.text("Completed fetching all available records.")
                     break
 
                 questions = []
@@ -110,7 +158,6 @@ def fetch_all_questions(lokNo=18, sessionNo=4, max_pages=3, page_size=10, locale
                             questions.extend(valid_questions)
 
                 if not questions:
-                    status_text.text("No more questions found.")
                     break
 
                 for q in questions:
@@ -134,15 +181,8 @@ def fetch_all_questions(lokNo=18, sessionNo=4, max_pages=3, page_size=10, locale
                     }
                     all_questions.append(processed_q)
 
-                if len(all_questions) % 100 == 0:
-                    status_text.text(f"Processed {len(all_questions)} questions so far...")
-
-            except Exception as e:
-                st.warning(f"Error on page {page}: {str(e)}")
+            except Exception:
                 continue
-
-        status_text.text(f"Completed! Total questions fetched: {len(all_questions)}")
-        progress_bar.progress(1.0)
 
     return all_questions
 
@@ -201,13 +241,13 @@ def main():
         layout="wide"
     )
     
-    current_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-    st.markdown("**System Information**")
-    st.markdown(f"- **Current Date and Time (UTC):** {current_time}")
-    st.markdown(f"- **Current User's Login:** aryanbakshi04")
-    st.markdown(f"- **Data Storage:** FAISS")
+    # current_time = "2025-06-10 13:38:34" 
+    # st.markdown("**System Information**")
+    # st.markdown(f"- **Current Date and Time (UTC - YYYY-MM-DD HH:MM:SS formatted):** {current_time}")
+    # st.markdown(f"- **Current User's Login:** aryanbakshi04")
+    # st.markdown(f"- **Data Storage:** FAISS")
 
-    st.title("🏛️ Parliamentary Ministry Q&A Assistant")
+    st.title("Parliamentary Ministry Q&A Assistant")
 
     if 'previous_questions' not in st.session_state:
         st.session_state.previous_questions = []
@@ -228,11 +268,8 @@ def main():
             st.error("Error loading index. Please refresh the page.")
             st.stop()
 
-    ministries = sorted(set(doc.metadata['ministry'] for doc in db.docstore._dict.values()))
     
-    if not ministries:
-        st.error("No ministries found. Please try again later.")
-        st.stop()
+    ministries = sorted(ALL_MINISTRIES)
 
     with st.sidebar:
         st.header("Ministry Selection")
@@ -242,7 +279,7 @@ def main():
             help="Select the ministry you want to query"
         )
         
-        if st.button("🔄 Refresh Data"):
+        if st.button("Refresh Data"):
             with st.spinner("Fetching latest data..."):
                 start_time = time.time()
                 new_records = fetch_all_questions()
@@ -267,7 +304,7 @@ def main():
             help="Enter your question related to ministry affairs"
         )
 
-        if st.button("🔍 Get Ministry Response", use_container_width=True):
+        if st.button("Get Ministry Response", use_container_width=True):
             if not is_valid_question(question):
                 st.error("Please provide a complete question.")
                 return
@@ -294,15 +331,15 @@ def main():
                     response = agent.run(prompt)
                     answer = response.content if hasattr(response, 'content') else str(response)
                     
-                    st.subheader("🏛️ Official Ministry Response")
+                    st.subheader("Official Ministry Response")
                     st.markdown(answer)
                     
-                    with st.expander("📋 Source Details", expanded=True):
+                    with st.expander("Source Details", expanded=True):
                         for doc, score in results:
                             st.markdown(f"**Parliament Session:** {doc.metadata['session']}")
                             st.markdown(f"**Date:** {doc.metadata['date']}")
                             if doc.metadata.get('pdf_url'):
-                                st.markdown(f"[📄 View Parliamentary Record]({doc.metadata['pdf_url']})")
+                                st.markdown(f"[View Parliamentary Record]({doc.metadata['pdf_url']})")
             
             except Exception as e:
                 st.error("Error generating response. Please try again.")
