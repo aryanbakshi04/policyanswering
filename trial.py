@@ -1,27 +1,10 @@
-import pysqlite3 as _sqlite3  
-import sys
-sys.modules['sqlite3'] = _sqlite3
-import sqlite3
-
 import os
-os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
-
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except ImportError:
-    pass
-
-import numpy as np
 import json
 import streamlit as st
 import requests
 from datetime import datetime, timezone, timedelta
 import time
-
-import chromadb
-from chromadb.config import Settings
-from chromadb.utils import embedding_functions
+import numpy as np
 from typing import List, Dict
 from urllib.parse import urlencode
 
@@ -33,15 +16,15 @@ from langchain_community.vectorstores import FAISS
 from agno.agent import Agent
 from agno.models.google import Gemini
 
+# Constants
 PDF_CACHE_DIR = "pdf_cache_sansad"
-CHROMA_DB_PATH = "./chroma_db"
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 GEMINI_MODEL_NAME = "gemini-2.0-flash-exp"
 API_URL = "https://sansad.in/api_ls/question/qetFilteredQuestionsAns"
-CHROMA_COLLECTION = "parliamentary_qa"
+FAISS_INDEX_PATH = "./faiss_index"
 
 os.makedirs(PDF_CACHE_DIR, exist_ok=True)
-os.makedirs(CHROMA_DB_PATH, exist_ok=True)
+os.makedirs(FAISS_INDEX_PATH, exist_ok=True)
 
 def is_valid_question(question: str) -> bool:
     question = question.strip()
@@ -68,7 +51,7 @@ Response Format:
 3. Future Plans/Recommendations (if applicable)
 """
 
-def fetch_all_questions(lokNo=18, sessionNo=4, max_pages=625, page_size=10, locale="en"):
+def fetch_all_questions(lokNo=18, sessionNo=4, max_pages=3, page_size=10, locale="en"):
     all_questions = []
     headers = {
         'Accept': 'application/json',
@@ -163,83 +146,35 @@ def fetch_all_questions(lokNo=18, sessionNo=4, max_pages=625, page_size=10, loca
 
     return all_questions
 
-def setup_chromadb():
-    settings = Settings(
-        chroma_db_impl="duckdb+parquet",
-        persist_directory=CHROMA_DB_PATH,
-        anonymized_telemetry=False
-    )
+def create_faiss_index(records):
+    embeddings = SentenceTransformerEmbeddings(model_name=EMBEDDING_MODEL)
+    texts = []
+    metadatas = []
     
-    client = chromadb.Client(settings)
-    embedding_function = embedding_functions.SentenceTransformerEmbeddingFunction(
-        model_name=EMBEDDING_MODEL
-    )
-
-    try:
-        collection = client.get_collection(CHROMA_COLLECTION)
-    except:
-        collection = client.create_collection(
-            name=CHROMA_COLLECTION,
-            embedding_function=embedding_function
-        )
-    return client, collection
-
-def data_storage_chromadb(collection, records):
-    BATCH_SIZE = 500
+    for record in records:
+        text = f"""
+        Subject: {record['subject']}
+        Question: {record['question_text']}
+        Ministry: {record['ministry']}
+        Type: {record['type']}
+        Member: {record['member']}
+        Date: {record['date']}
+        """
+        texts.append(text)
+        metadatas.append({
+            "ministry": record['ministry'],
+            "date": record['date'],
+            "session": record['session'],
+            "pdf_url": record['pdf_url']
+        })
     
-    try:
-        collection.delete(where={'ministry': {'$exists': True}})
-    except Exception:
-        pass
+    db = FAISS.from_texts(texts, embeddings, metadatas=metadatas)
+    db.save_local(FAISS_INDEX_PATH)
+    return db
 
-    total_batches = len(records) // BATCH_SIZE + 1
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-
-    for batch in range(0, len(records), BATCH_SIZE):
-        progress = (batch // BATCH_SIZE + 1) / total_batches
-        progress_bar.progress(progress)
-        status_text.text(f"Storing batch {batch // BATCH_SIZE + 1} of {total_batches}...")
-
-        batch_records = records[batch:batch + BATCH_SIZE]
-        documents = []
-        metadatas = []
-        ids = []
-
-        for rec in batch_records:
-            doc_text = f"""
-            Subject: {rec['subject']}
-            Question: {rec['question_text']}
-            Ministry: {rec['ministry']}
-            Type: {rec['type']}
-            Member: {rec['member']}
-            Date: {rec['date']}
-            """
-            doc_id = f"{rec['question_no']}_{rec['session']}_{rec['loksabha']}"
-            metadata = {
-                "ministry": rec['ministry'],
-                "date": rec['date'],
-                "session": rec['session'],
-                "pdf_url": rec['pdf_url'],
-                "last_updated": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-            }
-            
-            documents.append(doc_text)
-            metadatas.append(metadata)
-            ids.append(doc_id)
-        
-        try:
-            collection.add(
-                documents=documents,
-                metadatas=metadatas,
-                ids=ids
-            )
-        except Exception as e:
-            st.warning(f"Error storing batch {batch // BATCH_SIZE + 1}: {str(e)}")
-            continue
-
-    status_text.text("Data storage completed!")
-    progress_bar.progress(1.0)
+def load_faiss_index():
+    embeddings = SentenceTransformerEmbeddings(model_name=EMBEDDING_MODEL)
+    return FAISS.load_local(FAISS_INDEX_PATH, embeddings)
 
 def init_agent():
     return Agent(
@@ -266,33 +201,34 @@ def main():
         layout="wide"
     )
     
+    current_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     st.markdown("**System Information**")
-    st.markdown(f"- **Current Date and Time (UTC - YYYY-MM-DD HH:MM:SS formatted):** 2025-06-10 13:17:59")
+    st.markdown(f"- **Current Date and Time (UTC):** {current_time}")
     st.markdown(f"- **Current User's Login:** aryanbakshi04")
-    st.markdown(f"- **Data Storage:** ChromaDB")
+    st.markdown(f"- **Data Storage:** FAISS")
 
     st.title("🏛️ Parliamentary Ministry Q&A Assistant")
 
     if 'previous_questions' not in st.session_state:
         st.session_state.previous_questions = []
-    
+
     if 'data_loading' not in st.session_state:
         st.session_state.data_loading = False
-
-    try:
-        client, collection = setup_chromadb()
-    except Exception as e:
-        st.error("Error initializing database. Please try again.")
-        st.stop()
 
     if not st.session_state.data_loading:
         st.session_state.data_loading = True
         all_records = fetch_all_questions()
-        with st.spinner("Updating data in ChromaDB..."):
-            data_storage_chromadb(collection, all_records)
+        with st.spinner("Creating FAISS index..."):
+            db = create_faiss_index(all_records)
         st.session_state.data_loading = False
+    else:
+        try:
+            db = load_faiss_index()
+        except Exception as e:
+            st.error("Error loading index. Please refresh the page.")
+            st.stop()
 
-    ministries = sorted({rec['ministry'] for rec in all_records if rec['ministry']})
+    ministries = sorted(set(doc.metadata['ministry'] for doc in db.docstore._dict.values()))
     
     if not ministries:
         st.error("No ministries found. Please try again later.")
@@ -306,7 +242,7 @@ def main():
             help="Select the ministry you want to query"
         )
         
-        if st.button("Refresh Data"):
+        if st.button("🔄 Refresh Data"):
             with st.spinner("Fetching latest data..."):
                 start_time = time.time()
                 new_records = fetch_all_questions()
@@ -318,7 +254,7 @@ def main():
                 - Time Taken: {time.time() - start_time:.2f} seconds
                 """)
                 
-                data_storage_chromadb(collection, new_records)
+                db = create_faiss_index(new_records)
                 st.success("Data refreshed successfully!")
                 st.experimental_rerun()
 
@@ -331,7 +267,7 @@ def main():
             help="Enter your question related to ministry affairs"
         )
 
-        if st.button("Get Ministry Response", use_container_width=True):
+        if st.button("🔍 Get Ministry Response", use_container_width=True):
             if not is_valid_question(question):
                 st.error("Please provide a complete question.")
                 return
@@ -340,17 +276,17 @@ def main():
                 st.session_state.previous_questions.append(question)
             
             try:
-                results = collection.query(
-                    query_texts=[question],
-                    n_results=5,
-                    where={"ministry": selected_ministry}
+                results = db.similarity_search_with_score(
+                    question,
+                    k=5,
+                    filter={'ministry': selected_ministry}
                 )
                 
-                if not results['documents'][0]:
+                if not results:
                     st.error("No relevant information found.")
                     return
                 
-                context = "\n\n".join(results['documents'][0])
+                context = "\n\n".join([doc.page_content for doc, score in results])
                 agent = init_agent()
                 
                 with st.spinner("Generating response..."):
@@ -358,15 +294,15 @@ def main():
                     response = agent.run(prompt)
                     answer = response.content if hasattr(response, 'content') else str(response)
                     
-                    st.subheader("Official Ministry Response")
+                    st.subheader("🏛️ Official Ministry Response")
                     st.markdown(answer)
                     
-                    with st.expander("Source Details", expanded=True):
-                        for metadata in results['metadatas'][0]:
-                            st.markdown(f"**Parliament Session:** {metadata['session']}")
-                            st.markdown(f"**Date:** {metadata['date']}")
-                            if metadata.get('pdf_url'):
-                                st.markdown(f"[View Parliamentary Record]({metadata['pdf_url']})")
+                    with st.expander("📋 Source Details", expanded=True):
+                        for doc, score in results:
+                            st.markdown(f"**Parliament Session:** {doc.metadata['session']}")
+                            st.markdown(f"**Date:** {doc.metadata['date']}")
+                            if doc.metadata.get('pdf_url'):
+                                st.markdown(f"[📄 View Parliamentary Record]({doc.metadata['pdf_url']})")
             
             except Exception as e:
                 st.error("Error generating response. Please try again.")
