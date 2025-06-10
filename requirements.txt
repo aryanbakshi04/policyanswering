@@ -1,13 +1,10 @@
-numpy==1.24.3
 streamlit
-chromadb==0.3.29
 sentence-transformers
 python-dotenv
-pysqlite3-binary
 langchain
 langchain-community
 faiss-cpu
 pypdf
 agno
 requests
-protobuf==3.20.3
+numpy
