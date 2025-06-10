@@ -1,1 +1,5 @@
+chroma_db/
+pdf_cache_sansad/
 .env
+__pycache__/
+*.pyc
