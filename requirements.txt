@@ -1,5 +1,6 @@
+numpy==1.24.3
 streamlit
-chromadb==0.4.24
+chromadb==0.3.29
 sentence-transformers
 python-dotenv
 pysqlite3-binary
