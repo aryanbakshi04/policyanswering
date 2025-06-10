@@ -9,4 +9,5 @@ agno
 requests
 numpy
 google-generativeai>=0.3.0
-gemini
+google-auth           
+google-auth-oauthlib 
