@@ -53,7 +53,7 @@ Response Format:
 """
 
 @st.cache_data(ttl=24*3600)
-def fetch_all_questions(lokNo=18, sessionNo=4, max_pages=625, page_size=10, locale="en"):
+def fetch_all_questions(lokNo=18, sessionNo=4, max_pages=2, page_size=10, locale="en"):
     all_questions = []
     headers = {
         'Accept': 'application/json',
