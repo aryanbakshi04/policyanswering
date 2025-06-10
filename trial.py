@@ -27,12 +27,10 @@ API_URL = "https://sansad.in/api_ls/question/qetFilteredQuestionsAns"
 os.makedirs(PDF_CACHE_DIR, exist_ok=True)
 
 def is_valid_question(question: str) -> bool:
-    words = [w.lower() for w in question.split() if len(w) > 3]
-    if len(words) < 3:
-        return False
-    ministry_keywords = ['policy', 'scheme', 'program', 'initiative', 'ministry', 
-                        'government', 'public', 'welfare', 'development', 'plan']
-    return any(keyword in words for keyword in ministry_keywords)
+    question = question.strip()
+    words = question.split()
+    
+    return len(question) > 0 and len(words) >= 3
 
 def construct_prompt(question, context, ministry):
     return f"""
