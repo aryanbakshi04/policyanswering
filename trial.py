@@ -2,8 +2,9 @@ import pysqlite3 as _sqlite3
 import sys
 sys.modules['sqlite3'] = _sqlite3
 import sqlite3
-import time
-from datetime import datetime, timezone, timedelta
+
+import os
+os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
 
 try:
     from dotenv import load_dotenv
@@ -11,10 +12,13 @@ try:
 except ImportError:
     pass
 
-import os
+import numpy as np
 import json
 import streamlit as st
 import requests
+from datetime import datetime, timezone, timedelta
+import time
+
 import chromadb
 from chromadb.config import Settings
 from chromadb.utils import embedding_functions
@@ -160,7 +164,13 @@ def fetch_all_questions(lokNo=18, sessionNo=4, max_pages=625, page_size=10, loca
     return all_questions
 
 def setup_chromadb():
-    client = chromadb.PersistentClient(path=CHROMA_DB_PATH)
+    settings = Settings(
+        chroma_db_impl="duckdb+parquet",
+        persist_directory=CHROMA_DB_PATH,
+        anonymized_telemetry=False
+    )
+    
+    client = chromadb.Client(settings)
     embedding_function = embedding_functions.SentenceTransformerEmbeddingFunction(
         model_name=EMBEDDING_MODEL
     )
