@@ -8,6 +8,11 @@ import os
 import json
 import streamlit as st
 import requests
+import chromadb
+from chromadb.config import settings
+from chromadb.utils import embedding_functions
+from typing import List,Dict
+from datetime import datetime,timezone
 from urllib.parse import urlencode
 
 from langchain_community.document_loaders import PyPDFLoader
@@ -179,6 +184,59 @@ def init_agent():
         markdown=True
     )
 
+chroma_collection="parliamentary_Q&A"
+
+def setup_chromadb():
+    client=chromadb.HttpClient(
+        host=os.getenv(
+    )
+    embedding_function=embedding_functions.SentenceTransformerEmbeddingFunction(model_name=EMBEDDING_MODEL)
+
+    try:
+        chroma_collection=client.get_collection(chroma_collection)
+    except:
+        chroma_collection=client.create_collection(
+            name=chroma_collection,
+            embedding_function=embedding_function
+        )
+    return client,chroma_collection
+
+def data_storage_chromadb(collection,records):
+    for batch in range(0,len(records),100):
+        batch_records=records[batch:batch+100]
+
+        documents=[]
+        metadatas=[]
+        ids=[]
+
+        for rec in batch_records:
+            doc_text=f"""
+            Subject:{rec['subject']}
+            Ministry:{rec['ministry']}
+            Type:{rec['type']}
+            Member:{rec['member']}
+            Date:{rec['date']}
+            """
+            doc_id=f"{rec['question_no']}_{rec['session']}_{rec['loksabha']}"
+            metadata={
+                "ministry": rec['ministry'],
+                "date": rec['date'],
+                "session": rec['session'],
+                "pdf_url": rec['pdf_url']
+            }
+            
+            documents.append(doc_text)
+            metadatas.append(metadata)
+            ids.append(doc_id)
+        
+        try:
+            collection.add(
+                documents=documents,
+                metadatas=metadatas,
+                ids=ids)
+            
+        except Exception as e:
+            continue
 
 def main():
     st.set_page_config(
@@ -186,14 +244,24 @@ def main():
         page_icon="🏛️",
         layout="wide"
     )
+        
+    current_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    st.markdown(f"**Current Date and Time (UTC - YYYY-MM-DD HH:MM:SS formatted):** {current_time}")
+    st.markdown(f"**Current User's Login:** aryanbakshi04")
 
     st.title("🏛️ Parliamentary Ministry Q&A Assistant")
 
     if 'previous_questions' not in st.session_state:
         st.session_state.previous_questions = []
-
+    
+    client,chroma_collection=setup_chromadb()
     
     all_records = fetch_all_questions()
+    if not st.session_state.get('data_stored'):
+        with st.spinner("Storing data in ChromaDB..."):
+            data_storage_chromadb(chroma_collection, all_records)
+            st.session_state.data_stored = True
+
     ministries = sorted({rec['ministry'] for rec in all_records if rec['ministry']})
     
     if not ministries:
@@ -219,7 +287,7 @@ def main():
             help="Enter your question related to ministry affairs and public policy"
         )
 
-        if st.button("🔍 Get Ministry Response", use_container_width=True):
+        if st.button("Get Ministry Response", use_container_width=True):
             if not question.strip():
                 st.error("Please enter a question.")
             elif not is_valid_question(question):
@@ -228,56 +296,38 @@ def main():
                 if question not in st.session_state.previous_questions:
                     st.session_state.previous_questions.append(question)
 
-                filtered = [r for r in all_records if r['ministry'] == selected_ministry]
-                if not filtered:
-                    st.error("No records found for selected ministry.")
-                    st.stop()
-
-                vectordb = build_vectorstore(filtered)
-                if vectordb is None:
-                    st.error("No searchable documents available for this ministry.")
-                    st.stop()
-
-                agent = init_agent()
-
-                with st.spinner("Analyzing parliamentary records..."):
-                    try:
-                        docs = vectordb.similarity_search(question, k=5)
-                        if not docs:
-                            st.error("No relevant information found to answer this query.")
-                        else:
-                            context = "\n\n".join(d.page_content for d in docs)
-                            prompt = construct_prompt(question, context, selected_ministry)
-                            
-                            response = agent.run(prompt)
-                            answer = response.content if hasattr(response, 'content') else str(response)
-                            
-                            st.subheader("🏛️ Official Ministry Response")
-                            st.markdown(answer)
-                            
-                            with st.expander("📋 Source Details", expanded=True):
-                                sessions = {}
-                                for doc in docs:
-                                    session = doc.metadata.get('session', 'N/A')
-                                    if session not in sessions:
-                                        sessions[session] = {
-                                            'dates': set(),
-                                            'urls': set()
-                                        }
-                                    sessions[session]['dates'].add(doc.metadata.get('date', 'N/A'))
-                                    sessions[session]['urls'].add(doc.metadata.get('source_url', ''))
-                                
-                                for session, details in sessions.items():
-                                    st.markdown(f"**Parliament Session:** {session}")
-                                    st.markdown(f"**Dates Referenced:** {', '.join(sorted(details['dates']))}")
-                                    st.markdown("**Source Documents:**")
-                                    for url in details['urls']:
-                                        if url:
-                                            st.markdown(f"- [📄 View Parliamentary Record]({url})")
+                try:
+                    results = chroma_collection.query(
+                        query_texts=[question],
+                        n_results=5,
+                        where={"ministry": selected_ministry}
+                    )
                     
-                    except Exception as e:
-                        st.error("Error generating response. Please try again.")
+                    if not results['documents'][0]:
+                        st.error("No relevant information found.")
                         st.stop()
+                    
+                    context = "\n\n".join(results['documents'][0])
+                    agent = init_agent()
+                    
+                    with st.spinner("Generating response..."):
+                        prompt = construct_prompt(question, context, selected_ministry)
+                        response = agent.run(prompt)
+                        answer = response.content if hasattr(response, 'content') else str(response)
+                        
+                        st.subheader("🏛️ Official Ministry Response")
+                        st.markdown(answer)
+                        
+                        with st.expander("📋 Source Details", expanded=True):
+                            for metadata in results['metadatas'][0]:
+                                st.markdown(f"**Parliament Session:** {metadata['session']}")
+                                st.markdown(f"**Date:** {metadata['date']}")
+                                if metadata.get('pdf_url'):
+                                    st.markdown(f"[📄 View Parliamentary Record]({metadata['pdf_url']})")
+                
+                except Exception as e:
+                    st.error("Error generating response. Please try again.")
+                    st.stop()
 
     with col2:
         if st.session_state.previous_questions:
