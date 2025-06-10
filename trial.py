@@ -18,7 +18,7 @@ from langchain_community.vectorstores import FAISS
 from agno.agent import Agent
 from agno.models.google import Gemini
 
-# --- Configuration ---
+
 PDF_CACHE_DIR = "pdf_cache_sansad"
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 GEMINI_MODEL_NAME = "gemini-2.0-flash-exp"
@@ -120,7 +120,7 @@ def fetch_all_questions(lokNo=18, sessionNo=4, max_pages=625, page_size=10, loca
 
     return all_questions
 
-# --- Build FAISS vector store from filtered records ---
+
 @st.cache_resource
 def build_vectorstore(records):
     docs = []
@@ -159,7 +159,7 @@ def build_vectorstore(records):
         embeddings = SentenceTransformerEmbeddings(model_name=EMBEDDING_MODEL)
         return FAISS.from_documents(chunks, embeddings)
 
-# --- Initialize Gemini Agent ---
+
 @st.cache_resource
 def init_agent():
     return Agent(
@@ -179,7 +179,7 @@ def init_agent():
         markdown=True
     )
 
-# --- Main Streamlit App ---
+
 def main():
     st.set_page_config(
         page_title="Parliamentary Ministry Q&A Assistant",
@@ -192,7 +192,7 @@ def main():
     if 'previous_questions' not in st.session_state:
         st.session_state.previous_questions = []
 
-    # Load and cache all records once
+    
     all_records = fetch_all_questions()
     ministries = sorted({rec['ministry'] for rec in all_records if rec['ministry']})
     
@@ -200,7 +200,7 @@ def main():
         st.error("No ministries found. Please try again later.")
         st.stop()
 
-    # Sidebar for ministry selection
+    
     with st.sidebar:
         st.header("Ministry Selection")
         selected_ministry = st.selectbox(
@@ -209,7 +209,7 @@ def main():
             help="Select the ministry you want to query"
         )
 
-    # Main content area
+    
     col1, col2 = st.columns([2, 1])
 
     with col1:
