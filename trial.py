@@ -108,7 +108,7 @@ Response Format:
 3. Future Plans/Recommendations (if applicable)
 """
 
-def fetch_all_questions(lokNo=18, sessionNo=4, max_pages=100, page_size=10, locale="en"):
+def fetch_all_questions(lokNo=18, sessionNo=4, max_pages=30, page_size=10, locale="en"):
     all_questions = []
     headers = {
         'Accept': 'application/json',
@@ -193,19 +193,22 @@ def create_faiss_index(records):
     
     for record in records:
         text = f"""
+        Ministry: {record['ministry']}
         Subject: {record['subject']}
         Question: {record['question_text']}
-        Ministry: {record['ministry']}
         Type: {record['type']}
         Member: {record['member']}
         Date: {record['date']}
+        Session: {record['session']}
         """
-        texts.append(text)
+        texts.append(text.strip())
         metadatas.append({
             "ministry": record['ministry'],
             "date": record['date'],
             "session": record['session'],
-            "pdf_url": record['pdf_url']
+            "pdf_url": record['pdf_url'],
+            "question_text": record['question_text'],
+            "subject": record['subject']
         })
     
     db = FAISS.from_texts(texts, embeddings, metadatas=metadatas)
@@ -321,9 +324,18 @@ def main():
             try:
                 results = st.session_state.db.similarity_search_with_score(
                     question,
-                    k=5,
-                    filter={'ministry': selected_ministry}
+                    k=15
                 )
+                ministry_results=[
+                    (doc, score) for doc, score in results 
+                    if doc.metadata['ministry'] == selected_ministry
+                ]
+
+                if not ministry_results:
+                    st.warning(f"No direct matches found for {selected_ministry}. Showing closest available results.")
+                    results = results[:5]
+                else:
+                    results = ministry_results[:5]
                 
                 if not results:
                     st.error("No relevant information found.")
