@@ -114,7 +114,7 @@ Response Format:
 3. Future Plans/Recommendations (if applicable)
 """
 
-def fetch_all_questions(lokNo=18, sessionNo=4, max_pages=30, page_size=10, locale="en"):
+def fetch_all_questions(lokNo=18, sessionNo=4, max_pages=1000, page_size=50, locale="en"):
     all_questions = []
     headers = {
         'Accept': 'application/json',
@@ -233,7 +233,7 @@ def init_agent():
             "Focus solely on public interest and welfare when answering questions.",
             "Provide solution-oriented responses with a positive tone.",
             "Only answer questions relevant to ministry affairs and public policy.",
-            "Return 'Cannot answer this query. Please ask a question related to ministry affairs and public policy.' for irrelevant questions.",
+            "Return 'Cannot answer this query. Please ask a question related to ministry affairs and public policy.' for irrelevant questions that are unrelated to government policies, schemes, public service delivery, or administrative matters.",
             "Include specific details from source documents to support answers.",
             "Maintain formal, parliamentary language throughout responses.",
             "Structure responses to clearly address the question's main points.",
@@ -302,7 +302,7 @@ def main():
                     
                     st.session_state.db = create_faiss_index(new_records)
                     st.success("Data refreshed successfully!")
-                    st.experimental_rerun()
+                    # st.experimental_rerun()
                 except Exception as e:
                     st.error(f"Error refreshing data: {str(e)}")
 
