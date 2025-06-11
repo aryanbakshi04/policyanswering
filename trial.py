@@ -337,11 +337,11 @@ def main():
                     if doc.metadata['ministry'] == selected_ministry
                 ]
 
-                if not ministry_results:
-                    st.warning(f"No direct matches found for {selected_ministry}. Showing closest available results.")
-                    results = results[:5]
-                else:
-                    results = ministry_results[:5]
+                # if not ministry_results:
+                #     st.warning(f"No direct matches found for {selected_ministry}. Showing closest available results.")
+                #     results = results[:5]
+                # else:
+                #     results = ministry_results[:5]
                 
                 if not results:
                     st.error("No relevant information found.")
