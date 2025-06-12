@@ -18,3 +18,5 @@ google-generativeai>=0.3.0
 agno[google]>=0.3.0
 protobuf>=4.25.1
 grpcio>=1.59.3
+backoff
+urllib3
