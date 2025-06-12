@@ -1,9 +1,3 @@
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except ImportError:
-    pass
-
 import os
 import json
 import streamlit as st
@@ -17,48 +11,20 @@ from urllib.parse import urlencode
 from langchain_community.document_loaders import PyPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.embeddings import SentenceTransformerEmbeddings
-from langchain_community.vectorstores import Chroma
+from langchain_community.vectorstores import FAISS
 
 from agno.agent import Agent
 from agno.models.google import Gemini
 
+# Constants
 PDF_CACHE_DIR = "pdf_cache_sansad"
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 GEMINI_MODEL_NAME = "gemini-2.0-flash-exp"
-API_URL = "https://sansad.in/api_ls/question/getFilteredQuestionsAns"
-CHROMA_PERSIST_DIR = "./chroma_db"
-
-ALL_MINISTRIES = [
-    "Ministry of Agriculture and Farmers Welfare",
-    # ... (your existing ministry list)
-]
+API_URL = "https://sansad.in/api_ls/question/qetFilteredQuestionsAns"
+FAISS_INDEX_PATH = "./faiss_index"
 
 os.makedirs(PDF_CACHE_DIR, exist_ok=True)
-os.makedirs(CHROMA_PERSIST_DIR, exist_ok=True)
-
-def is_question_relevant(question, selected_ministry):
-    try:
-        results = st.session_state.db.similarity_search_with_score(
-            question,
-            k=5
-        )
-        
-        ministry_results = [
-            (doc, score) for doc, score in results 
-            if doc.metadata['ministry'] == selected_ministry
-        ]
-        
-        RELEVANCY_THRESHOLD = 0.8
-        relevant_results = [
-            (doc, score) for doc, score in ministry_results 
-            if score < RELEVANCY_THRESHOLD
-        ]
-        
-        return len(relevant_results) > 0
-        
-    except Exception as e:
-        st.error(f"Error checking relevancy: {str(e)}")
-        return False
+os.makedirs(FAISS_INDEX_PATH, exist_ok=True)
 
 def is_valid_question(question: str) -> bool:
     question = question.strip()
@@ -80,20 +46,27 @@ Instructions:
 Question: {question}
 
 Response Format:
-1. Formal Ministry Response (do not write this as a heading)
+1. Formal Ministry Response
 2. Related Initiatives (if any)
 3. Future Plans/Recommendations (if applicable)
 """
 
-def fetch_all_questions(lokNo=18, sessionNo=4, max_pages=1000, page_size=50, locale="en"):
+def fetch_all_questions(lokNo=18, sessionNo=4, max_pages=625, page_size=10, locale="en"):
     all_questions = []
     headers = {
         'Accept': 'application/json',
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
     }
 
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+
     with st.spinner("Fetching parliamentary records..."):
         for page in range(1, max_pages + 1):
+            progress = page / max_pages
+            progress_bar.progress(progress)
+            status_text.text(f"Fetching page {page} of {max_pages}...")
+
             params = {
                 "loksabhaNo": lokNo,
                 "sessionNumber": sessionNo,
@@ -113,12 +86,14 @@ def fetch_all_questions(lokNo=18, sessionNo=4, max_pages=1000, page_size=50, loc
                     except requests.exceptions.RequestException:
                         retry_count += 1
                         if retry_count == max_retries:
+                            st.warning(f"Skipping page {page} due to connection error")
                             continue
                         time.sleep(1)
 
                 data = resp.json()
                 
                 if not data:
+                    status_text.text("Completed fetching all available records.")
                     break
 
                 questions = []
@@ -135,6 +110,7 @@ def fetch_all_questions(lokNo=18, sessionNo=4, max_pages=1000, page_size=50, loc
                             questions.extend(valid_questions)
 
                 if not questions:
+                    status_text.text("No more questions found.")
                     break
 
                 for q in questions:
@@ -158,51 +134,47 @@ def fetch_all_questions(lokNo=18, sessionNo=4, max_pages=1000, page_size=50, loc
                     }
                     all_questions.append(processed_q)
 
-            except Exception:
+                if len(all_questions) % 100 == 0:
+                    status_text.text(f"Processed {len(all_questions)} questions so far...")
+
+            except Exception as e:
+                st.warning(f"Error on page {page}: {str(e)}")
                 continue
+
+        status_text.text(f"Completed! Total questions fetched: {len(all_questions)}")
+        progress_bar.progress(1.0)
 
     return all_questions
 
-def create_chroma_db(records):
+def create_faiss_index(records):
     embeddings = SentenceTransformerEmbeddings(model_name=EMBEDDING_MODEL)
     texts = []
     metadatas = []
     
     for record in records:
         text = f"""
-        Ministry: {record['ministry']}
         Subject: {record['subject']}
         Question: {record['question_text']}
+        Ministry: {record['ministry']}
         Type: {record['type']}
         Member: {record['member']}
         Date: {record['date']}
-        Session: {record['session']}
         """
-        texts.append(text.strip())
+        texts.append(text)
         metadatas.append({
             "ministry": record['ministry'],
             "date": record['date'],
             "session": record['session'],
-            "pdf_url": record['pdf_url'],
-            "question_text": record['question_text'],
-            "subject": record['subject']
+            "pdf_url": record['pdf_url']
         })
     
-    db = Chroma.from_texts(
-        texts,
-        embeddings,
-        metadatas=metadatas,
-        persist_directory=CHROMA_PERSIST_DIR
-    )
-    db.persist()
+    db = FAISS.from_texts(texts, embeddings, metadatas=metadatas)
+    db.save_local(FAISS_INDEX_PATH)
     return db
 
-def load_chroma_db():
+def load_faiss_index():
     embeddings = SentenceTransformerEmbeddings(model_name=EMBEDDING_MODEL)
-    return Chroma(
-        persist_directory=CHROMA_PERSIST_DIR,
-        embedding_function=embeddings
-    )
+    return FAISS.load_local(FAISS_INDEX_PATH, embeddings)
 
 def init_agent():
     return Agent(
@@ -229,7 +201,13 @@ def main():
         layout="wide"
     )
     
-    st.title("Parliamentary Ministry Q&A Assistant")
+    current_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    st.markdown("**System Information**")
+    st.markdown(f"- **Current Date and Time (UTC):** {current_time}")
+    st.markdown(f"- **Current User's Login:** aryanbakshi04")
+    st.markdown(f"- **Data Storage:** FAISS")
+
+    st.title("🏛️ Parliamentary Ministry Q&A Assistant")
 
     if 'previous_questions' not in st.session_state:
         st.session_state.previous_questions = []
@@ -237,23 +215,24 @@ def main():
     if 'data_loading' not in st.session_state:
         st.session_state.data_loading = False
 
-    if 'db' not in st.session_state:
-        st.session_state.db = None
+    if not st.session_state.data_loading:
+        st.session_state.data_loading = True
+        all_records = fetch_all_questions()
+        with st.spinner("Creating FAISS index..."):
+            db = create_faiss_index(all_records)
+        st.session_state.data_loading = False
+    else:
+        try:
+            db = load_faiss_index()
+        except Exception as e:
+            st.error("Error loading index. Please refresh the page.")
+            st.stop()
 
-    try:
-        if not st.session_state.db:
-            if os.path.exists(CHROMA_PERSIST_DIR):
-                with st.spinner("Loading existing database..."):
-                    st.session_state.db = load_chroma_db()
-            else:
-                with st.spinner("Creating new database..."):
-                    all_records = fetch_all_questions()
-                    st.session_state.db = create_chroma_db(all_records)
-    except Exception as e:
-        st.error(f"Error initializing database: {str(e)}")
-        st.session_state.db = None
-
-    ministries = sorted(ALL_MINISTRIES)
+    ministries = sorted(set(doc.metadata['ministry'] for doc in db.docstore._dict.values()))
+    
+    if not ministries:
+        st.error("No ministries found. Please try again later.")
+        st.stop()
 
     with st.sidebar:
         st.header("Ministry Selection")
@@ -263,23 +242,21 @@ def main():
             help="Select the ministry you want to query"
         )
         
-        if st.button("Refresh Data"):
+        if st.button("🔄 Refresh Data"):
             with st.spinner("Fetching latest data..."):
-                try:
-                    start_time = time.time()
-                    new_records = fetch_all_questions()
-                    
-                    st.info(f"""
-                    Data Statistics:
-                    - Total Questions: {len(new_records)}
-                    - Unique Ministries: {len(set(r['ministry'] for r in new_records))}
-                    - Time Taken: {time.time() - start_time:.2f} seconds
-                    """)
-                    
-                    st.session_state.db = create_chroma_db(new_records)
-                    st.success("Data refreshed successfully!")
-                except Exception as e:
-                    st.error(f"Error refreshing data: {str(e)}")
+                start_time = time.time()
+                new_records = fetch_all_questions()
+                
+                st.info(f"""
+                Data Statistics:
+                - Total Questions: {len(new_records)}
+                - Unique Ministries: {len(set(r['ministry'] for r in new_records))}
+                - Time Taken: {time.time() - start_time:.2f} seconds
+                """)
+                
+                db = create_faiss_index(new_records)
+                st.success("Data refreshed successfully!")
+                st.experimental_rerun()
 
     col1, col2 = st.columns([2, 1])
 
@@ -290,58 +267,51 @@ def main():
             help="Enter your question related to ministry affairs"
         )
 
-        if st.button("Get Ministry Response", use_container_width=True):
-            if not st.session_state.db:
-                st.error("Database not initialized. Please refresh the page.")
-                return
-
+        if st.button("🔍 Get Ministry Response", use_container_width=True):
             if not is_valid_question(question):
                 st.error("Please provide a complete question.")
                 return
             
-            if not is_question_relevant(question, selected_ministry):
-                st.error(f"This question appears to be irrelevant for the {selected_ministry}. Please ask a question related to this ministry's functions and responsibilities.")
-                return
+            if question not in st.session_state.previous_questions:
+                st.session_state.previous_questions.append(question)
             
             try:
-                results = st.session_state.db.similarity_search_with_score(
+                results = db.similarity_search_with_score(
                     question,
-                    k=15
+                    k=5,
+                    filter={'ministry': selected_ministry}
                 )
                 
-                ministry_results = [
-                    (doc, score) for doc, score in results 
-                    if doc.metadata['ministry'] == selected_ministry
-                ]
-
-                if ministry_results:
-                    results = ministry_results[:5]
-                    
-                    context = "\n\n".join([doc.page_content for doc, score in results])
-                    agent = init_agent()
-                    
-                    with st.spinner("Generating response..."):
-                        prompt = construct_prompt(question, context, selected_ministry)
-                        response = agent.run(prompt)
-                        answer = response.content if hasattr(response, 'content') else str(response)
-                        
-                        st.subheader("🏛️ Official Ministry Response")
-                        st.markdown(answer)
-                        
-                        with st.expander("📋 Source Details", expanded=False):
-                            for doc, score in results:
-                                if score < 0.8:
-                                    st.markdown("---")
-                                    st.markdown(f"**Parliament Session:** {doc.metadata['session']}")
-                                    st.markdown(f"**Date:** {doc.metadata['date']}")
-                                    if doc.metadata.get('pdf_url'):
-                                        st.markdown(f"[📄 View Parliamentary Record]({doc.metadata['pdf_url']})")
-                else:
-                    st.error(f"No relevant information found for {selected_ministry}.")
+                if not results:
+                    st.error("No relevant information found.")
                     return
+                
+                context = "\n\n".join([doc.page_content for doc, score in results])
+                agent = init_agent()
+                
+                with st.spinner("Generating response..."):
+                    prompt = construct_prompt(question, context, selected_ministry)
+                    response = agent.run(prompt)
+                    answer = response.content if hasattr(response, 'content') else str(response)
+                    
+                    st.subheader("🏛️ Official Ministry Response")
+                    st.markdown(answer)
+                    
+                    with st.expander("📋 Source Details", expanded=True):
+                        for doc, score in results:
+                            st.markdown(f"**Parliament Session:** {doc.metadata['session']}")
+                            st.markdown(f"**Date:** {doc.metadata['date']}")
+                            if doc.metadata.get('pdf_url'):
+                                st.markdown(f"[📄 View Parliamentary Record]({doc.metadata['pdf_url']})")
             
             except Exception as e:
-                st.error(f"Error generating response: {str(e)}")
+                st.error("Error generating response. Please try again.")
+
+    with col2:
+        if st.session_state.previous_questions:
+            st.subheader("Recent Questions")
+            for prev_q in st.session_state.previous_questions[-5:]:
+                st.markdown(f"- {prev_q}")
 
 if __name__ == "__main__":
     main()
