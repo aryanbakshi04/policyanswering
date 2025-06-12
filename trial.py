@@ -78,7 +78,7 @@ Response Format:
 3. Future Plans/Recommendations (if applicable)
 """
 
-def fetch_all_questions(lokNo=18, sessionNo=4, max_pages=1000, page_size=50, locale="en"):
+def fetch_all_questions(lokNo=18, sessionNo=4, max_pages=1000, page_size=10, locale="en"):
     all_questions = []
     headers = {
         'Accept': 'application/json',
