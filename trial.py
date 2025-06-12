@@ -1,5 +1,3 @@
-
-
 try:
     from dotenv import load_dotenv
     load_dotenv()
@@ -19,77 +17,48 @@ from urllib.parse import urlencode
 from langchain_community.document_loaders import PyPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.embeddings import SentenceTransformerEmbeddings
-from langchain_community.vectorstores import FAISS
+from langchain_community.vectorstores import Chroma
 
 from agno.agent import Agent
 from agno.models.google import Gemini
 
-
 PDF_CACHE_DIR = "pdf_cache_sansad"
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 GEMINI_MODEL_NAME = "gemini-2.0-flash-exp"
-API_URL = "https://sansad.in/api_ls/question/qetFilteredQuestionsAns"
-FAISS_INDEX_PATH = "./faiss_index"
-
+API_URL = "https://sansad.in/api_ls/question/getFilteredQuestionsAns"
+CHROMA_PERSIST_DIR = "./chroma_db"
 
 ALL_MINISTRIES = [
     "Ministry of Agriculture and Farmers Welfare",
-    "Ministry of Chemicals and Fertilizers",
-    "Ministry of Civil Aviation",
-    "Ministry of Coal",
-    "Ministry of Commerce and Industry",
-    "Ministry of Communications",
-    "Ministry of Consumer Affairs, Food and Public Distribution",
-    "Ministry of Corporate Affairs",
-    "Ministry of Culture",
-    "Ministry of Defence",
-    "Ministry of Development of North Eastern Region",
-    "Ministry of Earth Sciences",
-    "Ministry of Education",
-    "Ministry of Electronics and Information Technology",
-    "Ministry of Environment, Forest and Climate Change",
-    "Ministry of External Affairs",
-    "Ministry of Finance",
-    "Ministry of Fisheries, Animal Husbandry and Dairying",
-    "Ministry of Food Processing Industries",
-    "Ministry of Health and Family Welfare",
-    "Ministry of Heavy Industries",
-    "Ministry of Home Affairs",
-    "Ministry of Housing and Urban Affairs",
-    "Ministry of Information and Broadcasting",
-    "Ministry of Jal Shakti",
-    "Ministry of Labour and Employment",
-    "Ministry of Law and Justice",
-    "Ministry of Micro, Small and Medium Enterprises",
-    "Ministry of Mines",
-    "Ministry of Minority Affairs",
-    "Ministry of New and Renewable Energy",
-    "Ministry of Panchayati Raj",
-    "Ministry of Parliamentary Affairs",
-    "Ministry of Personnel, Public Grievances and Pensions",
-    "Ministry of Petroleum and Natural Gas",
-    "Ministry of Power",
-    "Ministry of Railways",
-    "Ministry of Road Transport and Highways",
-    "Ministry of Rural Development",
-    "Ministry of Science and Technology",
-    "Ministry of Ports, Shipping and Waterways",
-    "Ministry of Skill Development and Entrepreneurship",
-    "Ministry of Social Justice and Empowerment",
-    "Ministry of Statistics and Programme Implementation",
-    "Ministry of Steel",
-    "Ministry of Textiles",
-    "Ministry of Tourism",
-    "Ministry of Tribal Affairs",
-    "Ministry of Women and Child Development",
-    "Ministry of Youth Affairs and Sports",
-    "Prime Minister's Office",
-    "NITI Aayog"
+    # ... (your existing ministry list)
 ]
 
-
 os.makedirs(PDF_CACHE_DIR, exist_ok=True)
-os.makedirs(FAISS_INDEX_PATH, exist_ok=True)
+os.makedirs(CHROMA_PERSIST_DIR, exist_ok=True)
+
+def is_question_relevant(question, selected_ministry):
+    try:
+        results = st.session_state.db.similarity_search_with_score(
+            question,
+            k=5
+        )
+        
+        ministry_results = [
+            (doc, score) for doc, score in results 
+            if doc.metadata['ministry'] == selected_ministry
+        ]
+        
+        RELEVANCY_THRESHOLD = 0.8
+        relevant_results = [
+            (doc, score) for doc, score in ministry_results 
+            if score < RELEVANCY_THRESHOLD
+        ]
+        
+        return len(relevant_results) > 0
+        
+    except Exception as e:
+        st.error(f"Error checking relevancy: {str(e)}")
+        return False
 
 def is_valid_question(question: str) -> bool:
     question = question.strip()
@@ -194,7 +163,7 @@ def fetch_all_questions(lokNo=18, sessionNo=4, max_pages=1000, page_size=50, loc
 
     return all_questions
 
-def create_faiss_index(records):
+def create_chroma_db(records):
     embeddings = SentenceTransformerEmbeddings(model_name=EMBEDDING_MODEL)
     texts = []
     metadatas = []
@@ -219,13 +188,21 @@ def create_faiss_index(records):
             "subject": record['subject']
         })
     
-    db = FAISS.from_texts(texts, embeddings, metadatas=metadatas)
-    db.save_local(FAISS_INDEX_PATH)
+    db = Chroma.from_texts(
+        texts,
+        embeddings,
+        metadatas=metadatas,
+        persist_directory=CHROMA_PERSIST_DIR
+    )
+    db.persist()
     return db
 
-def load_faiss_index():
+def load_chroma_db():
     embeddings = SentenceTransformerEmbeddings(model_name=EMBEDDING_MODEL)
-    return FAISS.load_local(FAISS_INDEX_PATH, embeddings,allow_dangerous_deserialization=True)
+    return Chroma(
+        persist_directory=CHROMA_PERSIST_DIR,
+        embedding_function=embeddings
+    )
 
 def init_agent():
     return Agent(
@@ -235,7 +212,7 @@ def init_agent():
             "Focus solely on public interest and welfare when answering questions.",
             "Provide solution-oriented responses with a positive tone.",
             "Only answer questions relevant to ministry affairs and public policy.",
-            "Return 'Cannot answer this query. Please ask a question related to ministry affairs and public policy.' for irrelevant questions that are unrelated to government policies, schemes, public service delivery, or administrative matters.",
+            "Return 'Cannot answer this query. Please ask a question related to ministry affairs and public policy.' for irrelevant questions.",
             "Include specific details from source documents to support answers.",
             "Maintain formal, parliamentary language throughout responses.",
             "Structure responses to clearly address the question's main points.",
@@ -254,7 +231,6 @@ def main():
     
     st.title("Parliamentary Ministry Q&A Assistant")
 
-    
     if 'previous_questions' not in st.session_state:
         st.session_state.previous_questions = []
 
@@ -264,21 +240,19 @@ def main():
     if 'db' not in st.session_state:
         st.session_state.db = None
 
-    
     try:
         if not st.session_state.db:
-            if os.path.exists(os.path.join(FAISS_INDEX_PATH, "index.faiss")):
-                with st.spinner("Loading existing index..."):
-                    st.session_state.db = load_faiss_index()
+            if os.path.exists(CHROMA_PERSIST_DIR):
+                with st.spinner("Loading existing database..."):
+                    st.session_state.db = load_chroma_db()
             else:
-                with st.spinner("Creating new index..."):
+                with st.spinner("Creating new database..."):
                     all_records = fetch_all_questions()
-                    st.session_state.db = create_faiss_index(all_records)
+                    st.session_state.db = create_chroma_db(all_records)
     except Exception as e:
         st.error(f"Error initializing database: {str(e)}")
         st.session_state.db = None
 
-    
     ministries = sorted(ALL_MINISTRIES)
 
     with st.sidebar:
@@ -302,9 +276,8 @@ def main():
                     - Time Taken: {time.time() - start_time:.2f} seconds
                     """)
                     
-                    st.session_state.db = create_faiss_index(new_records)
+                    st.session_state.db = create_chroma_db(new_records)
                     st.success("Data refreshed successfully!")
-                    # st.experimental_rerun()
                 except Exception as e:
                     st.error(f"Error refreshing data: {str(e)}")
 
@@ -326,55 +299,49 @@ def main():
                 st.error("Please provide a complete question.")
                 return
             
-            # if question not in st.session_state.previous_questions:
-            #     st.session_state.previous_questions.append(question)
+            if not is_question_relevant(question, selected_ministry):
+                st.error(f"This question appears to be irrelevant for the {selected_ministry}. Please ask a question related to this ministry's functions and responsibilities.")
+                return
             
             try:
                 results = st.session_state.db.similarity_search_with_score(
                     question,
                     k=15
                 )
-                ministry_results=[
+                
+                ministry_results = [
                     (doc, score) for doc, score in results 
                     if doc.metadata['ministry'] == selected_ministry
                 ]
 
-                # if not ministry_results:
-                #     st.warning(f"No direct matches found for {selected_ministry}. Showing closest available results.")
-                #     results = results[:5]
-                # else:
-                #     results = ministry_results[:5]
-                
-                if not results:
-                    st.error("No relevant information found.")
+                if ministry_results:
+                    results = ministry_results[:5]
+                    
+                    context = "\n\n".join([doc.page_content for doc, score in results])
+                    agent = init_agent()
+                    
+                    with st.spinner("Generating response..."):
+                        prompt = construct_prompt(question, context, selected_ministry)
+                        response = agent.run(prompt)
+                        answer = response.content if hasattr(response, 'content') else str(response)
+                        
+                        st.subheader("🏛️ Official Ministry Response")
+                        st.markdown(answer)
+                        
+                        with st.expander("📋 Source Details", expanded=False):
+                            for doc, score in results:
+                                if score < 0.8:
+                                    st.markdown("---")
+                                    st.markdown(f"**Parliament Session:** {doc.metadata['session']}")
+                                    st.markdown(f"**Date:** {doc.metadata['date']}")
+                                    if doc.metadata.get('pdf_url'):
+                                        st.markdown(f"[📄 View Parliamentary Record]({doc.metadata['pdf_url']})")
+                else:
+                    st.error(f"No relevant information found for {selected_ministry}.")
                     return
-                
-                context = "\n\n".join([doc.page_content for doc, score in results])
-                agent = init_agent()
-                
-                with st.spinner("Generating response..."):
-                    prompt = construct_prompt(question, context, selected_ministry)
-                    response = agent.run(prompt)
-                    answer = response.content if hasattr(response, 'content') else str(response)
-                    
-                    st.subheader("Official Ministry Response")
-                    st.markdown(answer)
-                    
-                    with st.expander("Source Details", expanded=True):
-                        for doc, score in results:
-                            st.markdown(f"**Parliament Session:** {doc.metadata['session']}")
-                            st.markdown(f"**Date:** {doc.metadata['date']}")
-                            if doc.metadata.get('pdf_url'):
-                                st.markdown(f"[View Parliamentary Record]({doc.metadata['pdf_url']})")
             
             except Exception as e:
                 st.error(f"Error generating response: {str(e)}")
-
-    # with col2:
-    #     if st.session_state.previous_questions:
-    #         st.subheader("Recent Questions")
-    #         for prev_q in st.session_state.previous_questions[-5:]:
-    #             st.markdown(f"- {prev_q}")
 
 if __name__ == "__main__":
     main()
