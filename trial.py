@@ -109,7 +109,7 @@ Instructions:
 Question: {question}
 
 Response Format:
-1. Formal Ministry Response
+1. Formal Ministry Response (do not write this as a heading)
 2. Related Initiatives (if any)
 3. Future Plans/Recommendations (if applicable)
 """
@@ -324,8 +324,8 @@ def main():
                 st.error("Please provide a complete question.")
                 return
             
-            if question not in st.session_state.previous_questions:
-                st.session_state.previous_questions.append(question)
+            # if question not in st.session_state.previous_questions:
+            #     st.session_state.previous_questions.append(question)
             
             try:
                 results = st.session_state.db.similarity_search_with_score(
@@ -368,11 +368,11 @@ def main():
             except Exception as e:
                 st.error(f"Error generating response: {str(e)}")
 
-    with col2:
-        if st.session_state.previous_questions:
-            st.subheader("Recent Questions")
-            for prev_q in st.session_state.previous_questions[-5:]:
-                st.markdown(f"- {prev_q}")
+    # with col2:
+    #     if st.session_state.previous_questions:
+    #         st.subheader("Recent Questions")
+    #         for prev_q in st.session_state.previous_questions[-5:]:
+    #             st.markdown(f"- {prev_q}")
 
 if __name__ == "__main__":
     main()
