@@ -344,8 +344,8 @@ def main():
 
         if st.button("Get Ministry Response", use_container_width=True):
             if not st.session_state.db:
-        st.error("Database not initialized. Please refresh the page.")
-        return
+            st.error("Database not initialized. Please refresh the page.")
+            return
 
     if not is_valid_question(question):
         st.error("Please provide a complete question.")
