@@ -26,7 +26,7 @@ from agno.models.google import Gemini
 PDF_CACHE_DIR = "pdf_cache_sansad"
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 GEMINI_MODEL_NAME = "gemini-2.0-flash-exp"
-API_URL = "https://sansad.in/api_ls/question/qetFilteredQuestionsAns"
+API_URL = "https://sansad.in/api_ls/question/getFilteredQuestionsAns"
 FAISS_INDEX_PATH = "./faiss_index"
 
 
