@@ -1,3 +1,6 @@
+Latest.
+
+
 try:
     from dotenv import load_dotenv
     load_dotenv()
@@ -26,7 +29,7 @@ from agno.models.google import Gemini
 PDF_CACHE_DIR = "pdf_cache_sansad"
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 GEMINI_MODEL_NAME = "gemini-2.0-flash-exp"
-API_URL = "https://sansad.in/api_ls/question/getFilteredQuestionsAns"
+API_URL = "https://sansad.in/api_ls/question/qetFilteredQuestionsAns"
 FAISS_INDEX_PATH = "./faiss_index"
 
 
@@ -93,33 +96,6 @@ def is_valid_question(question: str) -> bool:
     question = question.strip()
     words = question.split()
     return len(question) > 0 and len(words) >= 3
-
-def is_question_relevant(question, selected_ministry):
-    try:
-        
-        results = st.session_state.db.similarity_search_with_score(
-            question,
-            k=5  
-        )
-        
-        ministry_results = [
-            (doc, score) for doc, score in results 
-            if doc.metadata['ministry'] == selected_ministry
-        ]
-        
-        RELEVANCY_THRESHOLD = 0.8
-        
-        relevant_results = [
-            (doc, score) for doc, score in ministry_results 
-            if score < RELEVANCY_THRESHOLD
-        ]
-        
-        return len(relevant_results) > 0
-        
-    except Exception as e:
-        st.error(f"Error checking relevancy: {str(e)}")
-        return False
-
 
 def construct_prompt(question, context, ministry):
     return f"""
@@ -347,56 +323,59 @@ def main():
                 st.error("Database not initialized. Please refresh the page.")
                 return
 
-    if not is_valid_question(question):
-        st.error("Please provide a complete question.")
-        return
-    
-    
-    if not is_question_relevant(question, selected_ministry):
-        st.error(f"This question appears to be irrelevant for the {selected_ministry}. Please ask a question related to this ministry's functions and responsibilities.")
-        return  
-    
-    try:
-        results = st.session_state.db.similarity_search_with_score(
-            question,
-            k=15
-        )
-        
-        ministry_results = [
-            (doc, score) for doc, score in results 
-            if doc.metadata['ministry'] == selected_ministry
-        ]
+            if not is_valid_question(question):
+                st.error("Please provide a complete question.")
+                return
+            
+            # if question not in st.session_state.previous_questions:
+            #     st.session_state.previous_questions.append(question)
+            
+            try:
+                results = st.session_state.db.similarity_search_with_score(
+                    question,
+                    k=15
+                )
+                ministry_results=[
+                    (doc, score) for doc, score in results 
+                    if doc.metadata['ministry'] == selected_ministry
+                ]
 
-        
-        if ministry_results:
-            results = ministry_results[:5]
-            
-            context = "\n\n".join([doc.page_content for doc, score in results])
-            agent = init_agent()
-            
-            with st.spinner("Generating response..."):
-                prompt = construct_prompt(question, context, selected_ministry)
-                response = agent.run(prompt)
-                answer = response.content if hasattr(response, 'content') else str(response)
+                # if not ministry_results:
+                #     st.warning(f"No direct matches found for {selected_ministry}. Showing closest available results.")
+                #     results = results[:5]
+                # else:
+                #     results = ministry_results[:5]
                 
-                st.subheader("Official Ministry Response")
-                st.markdown(answer)
+                if not results:
+                    st.error("No relevant information found.")
+                    return
                 
+                context = "\n\n".join([doc.page_content for doc, score in results])
+                agent = init_agent()
                 
-                with st.expander("Source Details", expanded=False):
-                    for doc, score in results:
-                        if score < 0.8: 
-                            st.markdown("---")
+                with st.spinner("Generating response..."):
+                    prompt = construct_prompt(question, context, selected_ministry)
+                    response = agent.run(prompt)
+                    answer = response.content if hasattr(response, 'content') else str(response)
+                    
+                    st.subheader("Official Ministry Response")
+                    st.markdown(answer)
+                    
+                    with st.expander("Source Details", expanded=True):
+                        for doc, score in results:
                             st.markdown(f"**Parliament Session:** {doc.metadata['session']}")
                             st.markdown(f"**Date:** {doc.metadata['date']}")
                             if doc.metadata.get('pdf_url'):
                                 st.markdown(f"[View Parliamentary Record]({doc.metadata['pdf_url']})")
-        else:
-            st.error(f"No relevant information found for {selected_ministry}.")
-            return
-    
-    except Exception as e:
-        st.error(f"Error generating response: {str(e)}")
+            
+            except Exception as e:
+                st.error(f"Error generating response: {str(e)}")
+
+    # with col2:
+    #     if st.session_state.previous_questions:
+    #         st.subheader("Recent Questions")
+    #         for prev_q in st.session_state.previous_questions[-5:]:
+    #             st.markdown(f"- {prev_q}")
 
 if __name__ == "__main__":
     main()
