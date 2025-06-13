@@ -13,45 +13,82 @@ import time
 import numpy as np
 from typing import List, Dict
 from urllib.parse import urlencode
-from requests.adapters import HTTPAdapter
-from requests.packages.urllib3.util.retry import Retry
-import backoff
 
 from langchain_community.document_loaders import PyPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.embeddings import SentenceTransformerEmbeddings
-from langchain_community.vectorstores import FAISS
+from langchain_community.vectorstores import Chroma
+import chromadb
 
 from agno.agent import Agent
 from agno.models.google import Gemini
 
-# Constants
+
 PDF_CACHE_DIR = "pdf_cache_sansad"
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 GEMINI_MODEL_NAME = "gemini-2.0-flash-exp"
-API_URL = "https://sansad.in/api_ls/question/getFilteredQuestionsAns"  # Fixed typo
-FAISS_INDEX_PATH = "./faiss_index"
+API_URL = "https://sansad.in/api_ls/question/getFilteredQuestionsAns"
+CHROMA_DB_PATH = "./chroma_db_store"
 
-# Your existing ALL_MINISTRIES list...
+
 ALL_MINISTRIES = [
     "Ministry of Agriculture and Farmers Welfare",
-    # ... (your existing ministry list)
+    "Ministry of Chemicals and Fertilizers",
+    "Ministry of Civil Aviation",
+    "Ministry of Coal",
+    "Ministry of Commerce and Industry",
+    "Ministry of Communications",
+    "Ministry of Consumer Affairs, Food and Public Distribution",
+    "Ministry of Corporate Affairs",
+    "Ministry of Culture",
+    "Ministry of Defence",
+    "Ministry of Development of North Eastern Region",
+    "Ministry of Earth Sciences",
+    "Ministry of Education",
+    "Ministry of Electronics and Information Technology",
+    "Ministry of Environment, Forest and Climate Change",
+    "Ministry of External Affairs",
+    "Ministry of Finance",
+    "Ministry of Fisheries, Animal Husbandry and Dairying",
+    "Ministry of Food Processing Industries",
+    "Ministry of Health and Family Welfare",
+    "Ministry of Heavy Industries",
+    "Ministry of Home Affairs",
+    "Ministry of Housing and Urban Affairs",
+    "Ministry of Information and Broadcasting",
+    "Ministry of Jal Shakti",
+    "Ministry of Labour and Employment",
+    "Ministry of Law and Justice",
+    "Ministry of Micro, Small and Medium Enterprises",
+    "Ministry of Mines",
+    "Ministry of Minority Affairs",
+    "Ministry of New and Renewable Energy",
+    "Ministry of Panchayati Raj",
+    "Ministry of Parliamentary Affairs",
+    "Ministry of Personnel, Public Grievances and Pensions",
+    "Ministry of Petroleum and Natural Gas",
+    "Ministry of Power",
+    "Ministry of Railways",
+    "Ministry of Road Transport and Highways",
+    "Ministry of Rural Development",
+    "Ministry of Science and Technology",
+    "Ministry of Ports, Shipping and Waterways",
+    "Ministry of Skill Development and Entrepreneurship",
+    "Ministry of Social Justice and Empowerment",
+    "Ministry of Statistics and Programme Implementation",
+    "Ministry of Steel",
+    "Ministry of Textiles",
+    "Ministry of Tourism",
+    "Ministry of Tribal Affairs",
+    "Ministry of Women and Child Development",
+    "Ministry of Youth Affairs and Sports",
+    "Prime Minister's Office",
+    "NITI Aayog"
 ]
 
-os.makedirs(PDF_CACHE_DIR, exist_ok=True)
-os.makedirs(FAISS_INDEX_PATH, exist_ok=True)
 
-def create_retry_session():
-    session = requests.Session()
-    retry_strategy = Retry(
-        total=3,
-        backoff_factor=1,
-        status_forcelist=[429, 500, 502, 503, 504],
-    )
-    adapter = HTTPAdapter(max_retries=retry_strategy)
-    session.mount("http://", adapter)
-    session.mount("https://", adapter)
-    return session
+os.makedirs(PDF_CACHE_DIR, exist_ok=True)
+os.makedirs(CHROMA_DB_PATH, exist_ok=True)
 
 def is_valid_question(question: str) -> bool:
     question = question.strip()
@@ -73,95 +110,93 @@ Instructions:
 Question: {question}
 
 Response Format:
-1. Formal Ministry Response (do not write this as a heading)
+1. Formal Ministry Response
 2. Related Initiatives (if any)
 3. Future Plans/Recommendations (if applicable)
 """
 
 def fetch_all_questions(lokNo=18, sessionNo=4, max_pages=1000, page_size=10, locale="en"):
+    # The loop will fetch pages until the API returns no more data (i.e., `data` is empty or 
+    # `questions` list is empty after processing the response). 
+    # `max_pages` serves as a maximum safeguard.
     all_questions = []
     headers = {
         'Accept': 'application/json',
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
     }
-    
-    session = create_retry_session()
-    
-    progress_bar = st.progress(0)
-    status_text = st.empty()
 
-    for page in range(1, max_pages + 1):
-        progress_bar.progress(page / max_pages)
-        status_text.text(f"Fetching page {page}/{max_pages}")
-        
-        params = {
-            "loksabhaNo": lokNo,
-            "sessionNumber": sessionNo,
-            "pageNo": page,
-            "locale": locale,
-            "pageSize": page_size
-        }
+    with st.spinner("Fetching parliamentary records..."):
+        for page in range(1, max_pages + 1):
+            params = {
+                "loksabhaNo": lokNo,
+                "sessionNumber": sessionNo,
+                "pageNo": page,
+                "locale": locale,
+                "pageSize": page_size
+            }
 
-        try:
-            resp = session.get(API_URL, params=params, headers=headers, timeout=30)
-            resp.raise_for_status()
-            data = resp.json()
-            
-            if not data:
-                break
+            try:
+                max_retries = 3
+                retry_count = 0
+                while retry_count < max_retries:
+                    try:
+                        resp = requests.get(API_URL, params=params, headers=headers, timeout=30)
+                        resp.raise_for_status()
+                        break
+                    except requests.exceptions.RequestException:
+                        retry_count += 1
+                        if retry_count == max_retries:
+                            continue
+                        time.sleep(1)
 
-            questions = []
-            if isinstance(data, list):
-                for item in data:
-                    if not isinstance(item, dict):
+                data = resp.json()
+                
+                if not data:
+                    break
+
+                questions = []
+                if isinstance(data, list):
+                    for item in data:
+                        if not isinstance(item, dict):
+                            continue
+                        qlist = item.get("listOfQuestions", [])
+                        if isinstance(qlist, list):
+                            valid_questions = [
+                                q for q in qlist 
+                                if isinstance(q, dict) and q.get("ministry")
+                            ]
+                            questions.extend(valid_questions)
+
+                if not questions:
+                    break
+
+                for q in questions:
+                    ministry = q.get("ministry")
+                    if not ministry:
                         continue
-                    qlist = item.get("listOfQuestions", [])
-                    if isinstance(qlist, list):
-                        valid_questions = [
-                            q for q in qlist 
-                            if isinstance(q, dict) and q.get("ministry")
-                        ]
-                        questions.extend(valid_questions)
 
-            if not questions:
-                break
+                    processed_q = {
+                        "question_no": q.get("quesNo"),
+                        "subject": q.get("subjects"),
+                        "loksabha": q.get("lokNo"),
+                        "session": q.get("sessionNo"),
+                        "member": (", ".join(q.get("member", []))
+                                 if isinstance(q.get("member"), list)
+                                 else q.get("member")),
+                        "ministry": ministry,
+                        "type": q.get("type"),
+                        "pdf_url": q.get("questionsFilePath"),
+                        "question_text": q.get("questionText"),
+                        "date": q.get("date"),
+                    }
+                    all_questions.append(processed_q)
 
-            for q in questions:
-                ministry = q.get("ministry")
-                if not ministry:
-                    continue
+            except Exception:
+                continue
 
-                processed_q = {
-                    "question_no": q.get("quesNo"),
-                    "subject": q.get("subjects"),
-                    "loksabha": q.get("lokNo"),
-                    "session": q.get("sessionNo"),
-                    "member": (", ".join(q.get("member", []))
-                             if isinstance(q.get("member"), list)
-                             else q.get("member")),
-                    "ministry": ministry,
-                    "type": q.get("type"),
-                    "pdf_url": q.get("questionsFilePath"),
-                    "question_text": q.get("questionText"),
-                    "date": q.get("date"),
-                }
-                all_questions.append(processed_q)
-
-        except requests.exceptions.RequestException as e:
-            st.warning(f"Error fetching page {page}: {str(e)}")
-            time.sleep(2)
-            continue
-        except Exception as e:
-            st.warning(f"Unexpected error on page {page}: {str(e)}")
-            continue
-
-    progress_bar.empty()
-    status_text.empty()
-    
     return all_questions
 
-
-def create_faiss_index(records):
+def create_chroma_db(records):
     embeddings = SentenceTransformerEmbeddings(model_name=EMBEDDING_MODEL)
     texts = []
     metadatas = []
@@ -186,13 +221,23 @@ def create_faiss_index(records):
             "subject": record['subject']
         })
     
-    db = FAISS.from_texts(texts, embeddings, metadatas=metadatas)
-    db.save_local(FAISS_INDEX_PATH)
+    # Create the Chroma vector store.
+    # This will create embeddings and store them in the specified directory.
+    db = Chroma.from_texts(
+        texts=texts, 
+        embedding=embeddings, 
+        metadatas=metadatas, 
+        persist_directory=CHROMA_DB_PATH
+    )
     return db
 
-def load_faiss_index():
+def load_chroma_db():
     embeddings = SentenceTransformerEmbeddings(model_name=EMBEDDING_MODEL)
-    return FAISS.load_local(FAISS_INDEX_PATH, embeddings, allow_dangerous_deserialization=True)
+    db = Chroma(
+        persist_directory=CHROMA_DB_PATH, 
+        embedding_function=embeddings
+    )
+    return db
 
 def init_agent():
     return Agent(
@@ -202,7 +247,7 @@ def init_agent():
             "Focus solely on public interest and welfare when answering questions.",
             "Provide solution-oriented responses with a positive tone.",
             "Only answer questions relevant to ministry affairs and public policy.",
-            "Return 'Cannot answer this query. Please ask a question related to ministry affairs and public policy.' for irrelevant questions that are unrelated to government policies, schemes, public service delivery, or administrative matters.",
+            "Return 'Cannot answer this query. Please ask a question related to ministry affairs and public policy.' for irrelevant questions.",
             "Include specific details from source documents to support answers.",
             "Maintain formal, parliamentary language throughout responses.",
             "Structure responses to clearly address the question's main points.",
@@ -221,7 +266,7 @@ def main():
     
     st.title("Parliamentary Ministry Q&A Assistant")
 
-    # Initialize session states
+    
     if 'previous_questions' not in st.session_state:
         st.session_state.previous_questions = []
 
@@ -231,19 +276,29 @@ def main():
     if 'db' not in st.session_state:
         st.session_state.db = None
 
-    # Sidebar with UTC time and user display
+    
+    try:
+        if not st.session_state.db:
+            # Check if the ChromaDB persistent directory exists
+            if os.path.isdir(CHROMA_DB_PATH) and os.listdir(CHROMA_DB_PATH): # Check if directory exists and is not empty
+                with st.spinner("Loading existing index..."):
+                    st.session_state.db = load_chroma_db()
+            else:
+                with st.spinner("Creating new index..."):
+                    all_records = fetch_all_questions()
+                    st.session_state.db = create_chroma_db(all_records)
+    except Exception as e:
+        st.error(f"Error initializing database: {str(e)}")
+        st.session_state.db = None
+
+    
+    ministries = sorted(ALL_MINISTRIES)
+
     with st.sidebar:
-        # Display current UTC time
-        current_utc = datetime.now(timezone.utc)
-        st.info(f"Current Date and Time (UTC - YYYY-MM-DD HH:MM:SS formatted):\n{current_utc.strftime('%Y-%m-%d %H:%M:%S')}")
-        
-        # Display user login
-        st.info(f"Current User's Login: aryanbakshi04")
-        
         st.header("Ministry Selection")
         selected_ministry = st.selectbox(
             "Choose Ministry",
-            sorted(ALL_MINISTRIES),
+            ministries,
             help="Select the ministry you want to query"
         )
         
@@ -260,24 +315,11 @@ def main():
                     - Time Taken: {time.time() - start_time:.2f} seconds
                     """)
                     
-                    st.session_state.db = create_faiss_index(new_records)
+                    st.session_state.db = create_chroma_db(new_records)
                     st.success("Data refreshed successfully!")
+                    st.experimental_rerun()
                 except Exception as e:
                     st.error(f"Error refreshing data: {str(e)}")
-
-    # Try to load existing database
-    try:
-        if not st.session_state.db:
-            if os.path.exists(os.path.join(FAISS_INDEX_PATH, "index.faiss")):
-                with st.spinner("Loading existing index..."):
-                    st.session_state.db = load_faiss_index()
-            else:
-                with st.spinner("Creating new index..."):
-                    all_records = fetch_all_questions()
-                    st.session_state.db = create_faiss_index(all_records)
-    except Exception as e:
-        st.error(f"Error initializing database: {str(e)}")
-        st.session_state.db = None
 
     col1, col2 = st.columns([2, 1])
 
@@ -297,47 +339,55 @@ def main():
                 st.error("Please provide a complete question.")
                 return
             
+            if question not in st.session_state.previous_questions:
+                st.session_state.previous_questions.append(question)
+            
             try:
                 results = st.session_state.db.similarity_search_with_score(
                     question,
                     k=15
                 )
-                
-                ministry_results = [
+                ministry_results=[
                     (doc, score) for doc, score in results 
                     if doc.metadata['ministry'] == selected_ministry
                 ]
 
-                if ministry_results:
-                    results = ministry_results[:5]
-                    
-                    context = "\n\n".join([doc.page_content for doc, score in results])
-                    agent = init_agent()
-                    
-                    with st.spinner("Generating response..."):
-                        prompt = construct_prompt(question, context, selected_ministry)
-                        response = agent.run(prompt)
-                        answer = response.content if hasattr(response, 'content') else str(response)
-                        
-                        st.subheader("🏛️ Official Ministry Response")
-                        st.markdown(answer)
-                        
-                        with st.expander("📋 Source Details", expanded=False):
-                            for doc, score in results:
-                                if score < 0.8:
-                                    st.markdown("---")
-                                    st.markdown(f"**Parliament Session:** {doc.metadata['session']}")
-                                    st.markdown(f"**Date:** {doc.metadata['date']}")
-                                    if doc.metadata.get('pdf_url'):
-                                        st.markdown(f"[📄 View Parliamentary Record]({doc.metadata['pdf_url']})")
+                if not ministry_results:
+                    st.warning(f"No direct matches found for {selected_ministry}. Showing closest available results.")
+                    results = results[:5]
                 else:
-                    st.error(f"No relevant information found for {selected_ministry}.")
+                    results = ministry_results[:5]
+                
+                if not results:
+                    st.error("No relevant information found.")
                     return
+                
+                context = "\n\n".join([doc.page_content for doc, score in results])
+                agent = init_agent()
+                
+                with st.spinner("Generating response..."):
+                    prompt = construct_prompt(question, context, selected_ministry)
+                    response = agent.run(prompt)
+                    answer = response.content if hasattr(response, 'content') else str(response)
+                    
+                    st.subheader("Official Ministry Response")
+                    st.markdown(answer)
+                    
+                    with st.expander("Source Details", expanded=True):
+                        for doc, score in results:
+                            st.markdown(f"**Parliament Session:** {doc.metadata['session']}")
+                            st.markdown(f"**Date:** {doc.metadata['date']}")
+                            if doc.metadata.get('pdf_url'):
+                                st.markdown(f"[View Parliamentary Record]({doc.metadata['pdf_url']})")
             
             except Exception as e:
                 st.error(f"Error generating response: {str(e)}")
-                time.sleep(2)  # Add delay before retrying
-                return
+
+    with col2:
+        if st.session_state.previous_questions:
+            st.subheader("Recent Questions")
+            for prev_q in st.session_state.previous_questions[-5:]:
+                st.markdown(f"- {prev_q}")
 
 if __name__ == "__main__":
     main()
